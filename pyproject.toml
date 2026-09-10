@@ -1,0 +1,40 @@
+[project]
+name = "fastforces"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "lukasmki", email = "lukasarus@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "ase>=3.29.0",
+    "molify>=0.2.6",
+    "networkx>=3.6",
+    "numpy>=2.0",
+    "openconf>=0.0.18",
+    "pyscf>=2.14.0",
+    "rdkit>=2024.3.1",
+    "scipy>=1.14",
+    "tblite>=0.7.0",
+]
+
+[project.scripts]
+fast-forces = "fastforces.__main__:main"
+
+[project.optional-dependencies]
+openmm = [
+    "openmm>=8.6.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.9,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+markers = ["slow: end-to-end fits that call a reference calculator"]
