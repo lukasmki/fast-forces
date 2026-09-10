@@ -57,7 +57,12 @@ def test_units_convert_to_physical_values():
 
 
 def test_angle_k_is_exported_unscaled():
-    """With the 0.5 convention fixed in the evaluator, no rescaling is left."""
+    """An angle `k` is a plain energy, so only the energy unit changes.
+
+    `QForce.compute_angle`, `export.openmm.ANGLE` and the example files are all
+    `0.5*k*(cos-cos0)^2`, so the two sides of the export agree and there is
+    nothing for this table to rescale.  See `test_angle_convention`.
+    """
     assert units.factor("angle", "k") == pytest.approx(units.ENERGY)
 
 

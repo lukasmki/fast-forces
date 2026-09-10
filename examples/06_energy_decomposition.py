@@ -1,10 +1,15 @@
 """06 -- What the four evaluators each contribute, and why r0 looks wrong.
 
 `FastForces` is a sum of four pieces: the bonded terms, ACKS2 charge-
-equilibration electrostatics, Lennard-Jones outside the bonded exclusions, and
-ZBL screened nuclear repulsion.  Only the bonded block is fit; the other three
-come from element tables and are evaluated and subtracted before the fit, so
-the bonded parameters absorb only what is left over.
+equilibration electrostatics, ZBL screened nuclear repulsion at short range, and
+Lennard-Jones at long range.  Only the bonded block is fit; the other three come
+from element tables and are evaluated and subtracted before the fit, so the
+bonded parameters absorb only what is left over.
+
+Neither of the two pair terms takes exclusions.  Both are summed over every
+pair, bonded ones included, and they hand over to each other rather than
+overlapping -- ZBL is switched off outside 1.5 A and the 12-6 switched on
+outside 2.2 A.
 
 That subtraction has a consequence worth understanding, which is the second
 half of this example.
@@ -27,24 +32,33 @@ banner(__doc__)
 atoms, params, training = fitted("CC#N", name="acetonitrile")
 pos, cell, pbc = atoms.get_positions(), np.array(atoms.cell), atoms.pbc
 
+# All four work in eV and Angstrom and read `params.terms` directly; each
+# returns `(energy, forces, virial)`.  `QForce` gets `bonded_terms()` rather
+# than the whole dict only so that it does not evaluate `reference` and count
+# `E0` a second time.
 pieces = {
     "bonded (QForce)": QForce(bond_form="morse")(pos, pbc, cell, params.bonded_terms()),
     "ACKS2": ACKS2()(pos, pbc, cell, params.terms),
-    "Lennard-Jones": LennardJones(params.exclusions)(pos, pbc, cell, params.terms),
+    "Lennard-Jones": LennardJones()(pos, pbc, cell, params.terms),
     "ZBL": ZBL()(pos, atoms.get_atomic_numbers(), pbc, cell),
 }
 
 print(f"{'term':18s} {'energy (eV)':>13s} {'max |force|':>13s}")
-for name, (energy, forces) in pieces.items():
+for name, (energy, forces, _) in pieces.items():
     print(f"{name:18s} {energy:13.4f} {abs(forces).max():13.4f}")
 print(f"{'E0 (reference)':18s} {params.e0:13.4f} {0.0:13.4f}")
 
-total = sum(e for e, _ in pieces.values()) + params.e0
+total = sum(e for e, _, _ in pieces.values()) + params.e0
 print(f"{'total':18s} {total:13.4f}")
 print(f"{'FastForces':18s} {ff.evaluate(atoms, params)[0]:13.4f}  (agrees)\n")
 
-print("Lennard-Jones is exactly zero here: in a six-atom molecule every pair is")
-print("within the 1-2/1-3/1-4 exclusions, so nothing is left for it to act on.\n")
+lj_energy = pieces["Lennard-Jones"][0]
+print(f"""Lennard-Jones is {lj_energy:+.4f} eV rather than zero.  It used to be exactly zero
+here -- in a six-atom molecule every pair is inside the 1-2/1-3/1-4 exclusions,
+so there was nothing left for it to act on -- but the term no longer excludes
+anything, and `lj.switch` is what makes that affordable: at a bond length the
+12-6 is switched down by three to four orders of magnitude, from hundreds of eV
+to hundredths.\n""")
 
 # ACKS2 solves its charges at every geometry rather than carrying fixed ones.
 atoms.calc = ff.FastForces(atoms, params)
@@ -83,11 +97,12 @@ for (i, j), length, r0 in zip(bonds["atoms"], lengths, bonds["kwargs"]["r0"]):
     label = f"{atoms[int(i)].symbol}{i}-{atoms[int(j)].symbol}{j}"
     print(f"{label:10s} {length:11.4f} {r0:11.4f}")
 
-zbl_energy, zbl_forces = pieces["ZBL"]
+zbl_energy, zbl_forces, _ = pieces["ZBL"]
 print(f"""
 `r0` is not the bond length, and it is not supposed to be.  ZBL is applied to
-every pair with no switching function and no bonded exclusions -- a deliberate
-choice -- so at these distances it still contributes {zbl_energy:+.1f} eV and up to
+every pair with no bonded exclusions -- a deliberate choice -- and its taper
+retains 92-99% of the repulsion at ordinary bond lengths, so at these distances
+it still contributes {zbl_energy:+.1f} eV and up to
 {abs(zbl_forces).max():.1f} eV/A of pure repulsion.  A Morse bond sitting at its own r0
 exerts no force at all, so it could never balance that.  The fit therefore
 compresses r0 until the bond pulls hard enough to cancel ZBL at the real

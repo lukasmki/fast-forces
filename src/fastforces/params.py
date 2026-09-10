@@ -1,9 +1,14 @@
 """The fitted force field: one container, three representations.
 
-Internally the parameters are held as a `term_dict` in ASE units -- exactly what
-`QForce`, `ACKS2` and `LennardJones` consume, so the calculator needs no
-translation layer.  The two export formats are OpenMM-flavoured and are produced
-through `export`, which owns every unit conversion.
+Internally the parameters are held as a `term_dict` in ASE units (eV,
+Angstrom) -- the units the fit works in, because its residuals come from an ASE
+calculator's own energies and forces.
+
+All four evaluators want them that way, so `terms` is handed to each of them as
+it stands and nothing in the evaluation path converts anything.  The two export
+formats are the only OpenMM-flavoured representations, and `export.units` is the
+only place that conversion is written down, so the calculator and the two
+exporters cannot drift apart.
 """
 
 import json
@@ -29,6 +34,11 @@ class Parameters:
 
     numbers: np.ndarray
     terms: dict[str, dict] = field(default_factory=dict)
+    # The 1-2/1-3/1-4 mask from `Topology`.  No evaluator consumes it any more,
+    # and neither does the OpenMM export: `LennardJones` dropped its exclusions
+    # and `ZBL` never had any, so both nonbonded terms are summed over every
+    # pair.  It is kept because it is a real property of the topology the field
+    # was built on, and `Topology` still derives it.
     exclusions: np.ndarray | None = None
     report: dict = field(default_factory=dict)
 
@@ -46,7 +56,12 @@ class Parameters:
         return 0.0 if reference is None else float(reference["kwargs"]["E0"].sum())
 
     def bonded_terms(self) -> dict:
-        """Just the terms `QForce` evaluates."""
+        """Just the terms `QForce` evaluates, in ASE units.
+
+        `reference` is excluded even though `QForce.compute_reference` would
+        evaluate it: `E0` is added once by the calculator, and letting `QForce`
+        pick it up as well would count it twice.
+        """
         return {k: v for k, v in self.terms.items() if k not in NON_QFORCE_TERMS}
 
     def fit_report(self) -> str:

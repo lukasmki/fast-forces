@@ -32,15 +32,17 @@ Bonds are the exception to the linearity, and are fit in a separate nonlinear
 block.  Two reasons, and both are forced:
 
   * The Morse exponent is `sqrt(k / 2D)`, so a Morse bond is not linear in `k`.
-  * `r0` cannot be read off the equilibrium geometry.  `ZBL` has no switching
-    function -- deliberately, see its docstring -- so at a normal bond length it
-    still contributes tens of eV and, more to the point, ~20 eV/A of repulsion.
-    The reference force there is zero, so something has to pull back, and a bond
-    sitting exactly at its own `r0` exerts no force at all.  The bond has to be
-    *pre-compressed*: `r0` is an effective parameter that balances the nonbonded
-    baseline, not a measurement of the bond length.  The example force field is
-    built this way too -- its O-H `r0` is 0.70 A against a true 0.97 A, while the
-    `bondangle` cross term that references the same bond keeps the true value.
+  * `r0` cannot be read off the equilibrium geometry.  Neither `ZBL` nor
+    `LennardJones` takes exclusions -- deliberately, see their docstrings -- so
+    both act on bonded pairs, and `zbl.taper` still retains 92-99% of the ZBL
+    repulsion at ordinary bond lengths: tens of eV, and more to the point ~20
+    eV/A.  The reference force there is zero, so something has to pull back, and
+    a bond sitting exactly at its own `r0` exerts no force at all.  The bond has
+    to be *pre-compressed*: `r0` is an effective parameter that balances the
+    nonbonded baseline, not a measurement of the bond length.  The example force
+    field is built this way too -- its O-H `r0` is 0.70 A against a true 0.97 A,
+    while the `bondangle` cross term that references the same bond keeps the
+    true value.
 
 So the fit alternates: solve every other force constant linearly with the bond
 contribution held fixed, then refine the handful of bond parameters nonlinearly
@@ -399,7 +401,11 @@ def _basis_columns(topology, values, qforce, vecs, skip=("bond",)):
                 }
             )
             kwargs["k"] = np.ones(int(mask.sum()))
-            energy, force = compute(vecs, atoms[mask], **kwargs)
+            # `QForce` is in eV and Angstrom throughout, which is what the fit
+            # works in, so the `compute_*` methods can be called directly with
+            # `vecs` straight off the frame.  The third return is the virial,
+            # which is fixed-cell here and unused.
+            energy, force, _ = compute(vecs, atoms[mask], **kwargs)
             energies.append(energy)
             forces.append(force.reshape(-1))
             labels.append((term, c))
@@ -407,18 +413,30 @@ def _basis_columns(topology, values, qforce, vecs, skip=("bond",)):
 
 
 def _nonbonded(params, frames):
-    """Energies and forces of the fixed nonbonded baseline, per frame."""
+    """Energies and forces of the fixed nonbonded baseline, per frame.
+
+    `LennardJones` takes no exclusions -- see its module docstring -- so this is
+    the whole pair sum, bonded pairs included, exactly as the calculator
+    evaluates it.  What it contributes at a bond length is part of the baseline
+    the bonded fit has to absorb, which is the same bargain `ZBL` already made.
+
+    All three return a virial as well.  The fit works at fixed cell, so they are
+    dropped here rather than carried through unused.
+    """
     acks2 = ACKS2()
-    lj = LennardJones(params.exclusions)
+    lj = LennardJones()
     zbl = ZBL()
+    has_lj = "lennardjones" in params.terms
     energies, forces = [], []
     for frame in frames:
         pos = frame.get_positions()
         pbc, cell = frame.pbc, np.array(frame.cell)
-        e1, f1 = acks2(pos, pbc, cell, params.terms)
-        e2, f2 = lj(pos, pbc, cell, params.terms)
-        # ZBL also returns a virial; the fit works at fixed cell, so it is
-        # dropped here rather than carried through unused.
+        e1, f1, _ = acks2(pos, pbc, cell, params.terms)
+        e2, f2, _ = (
+            lj(pos, pbc, cell, params.terms)
+            if has_lj
+            else (0.0, np.zeros_like(pos), None)
+        )
         e3, f3, _ = zbl(pos, frame.get_atomic_numbers(), pbc, cell)
         energies.append(e1 + e2 + e3)
         forces.append((f1 + f2 + f3).reshape(-1))
@@ -432,7 +450,7 @@ def _bond_block(topology, qforce, all_vecs, shape):
     kwargs = {name: value[classes] for name, value in shape.items()}
     energies, forces = [], []
     for vecs in all_vecs:
-        energy, force = qforce.compute_bond(vecs, atoms, **kwargs)
+        energy, force, _ = qforce.compute_bond(vecs, atoms, **kwargs)
         energies.append(energy)
         forces.append(force.reshape(-1))
     return np.array(energies), np.array(forces)

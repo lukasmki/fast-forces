@@ -3,6 +3,7 @@
 import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
+from ase.stress import full_3x3_to_voigt_6_stress
 
 from .forcefield.acks2 import ACKS2
 from .forcefield.lj import LennardJones
@@ -15,10 +16,22 @@ class FastForces(Calculator):
 
     The four evaluators divide the interaction between them with no overlap:
     `QForce` covers everything bonded, `ACKS2` the electrostatics with its
-    charges re-solved at every geometry, `LennardJones` the dispersion outside
-    the bonded exclusions, and `ZBL` the screened nuclear repulsion over every
-    pair.  The constant `E0` puts the total on the reference method's energy
-    scale.
+    charges re-solved at every geometry, `ZBL` the screened nuclear repulsion at
+    short range, and `LennardJones` the repulsion and dispersion at long range.
+
+    The last two are the ones with no topology at all: neither takes exclusions,
+    so both are evaluated over every pair including bonded ones.  They hand over
+    to each other rather than overlapping -- `zbl.taper` switches ZBL off at
+    1.5 A and `lj.switch` switches the 12-6 on at 2.2 A -- and what they
+    contribute at a bond length is absorbed by the fitted Morse depths, which is
+    why `fit` pre-compresses `r0`.
+
+    All four read `params.terms` as it stands -- eV and Angstrom, the units the
+    fit works in -- so nothing is converted anywhere in the evaluation path.
+    Only `QForce` is handed a filtered view, `bonded_terms()`, and only to keep
+    it off the `reference` block: `compute_reference` would evaluate `E0` a
+    second time.  It is built once here rather than per call, because a
+    calculator's parameters do not change over its life.
 
     The `atom` terms are passed through in global index order, so the term-order
     versus global-order distinction `ACKS2` documents stays trivial here.  It is
@@ -26,7 +39,7 @@ class FastForces(Calculator):
     atoms.
     """
 
-    implemented_properties = ["energy", "free_energy", "forces", "charges"]
+    implemented_properties = ["energy", "free_energy", "forces", "stress", "charges"]
 
     def __init__(self, atoms=None, params=None, bond_form: str = "morse", **kwargs):
         super().__init__(atoms=atoms, **kwargs)
@@ -35,8 +48,9 @@ class FastForces(Calculator):
         self.params = params
         self.qforce = QForce(bond_form=bond_form)
         self.acks2 = ACKS2()
-        self.lj = LennardJones(params.exclusions)
+        self.lj = LennardJones()
         self.zbl = ZBL()
+        self._bonded = params.bonded_terms()
 
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
@@ -47,18 +61,16 @@ class FastForces(Calculator):
         cell = np.array(atoms.cell)
         terms = self.params.terms
 
-        energy, forces = self.qforce(pos, pbc, cell, self.params.bonded_terms())
+        energy, forces, virial = self.qforce(pos, pbc, cell, self._bonded)
 
         if "atom" in terms:
-            de, df = self.acks2(pos, pbc, cell, terms)
-            energy, forces = energy + de, forces + df
+            de, df, dw = self.acks2(pos, pbc, cell, terms)
+            energy, forces, virial = energy + de, forces + df, virial + dw
         if "lennardjones" in terms:
-            de, df = self.lj(pos, pbc, cell, terms)
-            energy, forces = energy + de, forces + df
-        # The virial is dropped: `stress` is not in `implemented_properties`,
-        # and neither `ACKS2` nor `LennardJones` returns one to add it to.
-        de, df, _ = self.zbl(pos, atoms.get_atomic_numbers(), pbc, cell)
-        energy, forces = energy + de, forces + df
+            de, df, dw = self.lj(pos, pbc, cell, terms)
+            energy, forces, virial = energy + de, forces + df, virial + dw
+        de, df, dw = self.zbl(pos, atoms.get_atomic_numbers(), pbc, cell)
+        energy, forces, virial = energy + de, forces + df, virial + dw
 
         energy = energy + self.params.e0
 
@@ -67,6 +79,19 @@ class FastForces(Calculator):
             "free_energy": energy,
             "forces": forces,
         }
+        # Every term now returns `dE/d(strain)`, so the stress is available for
+        # the first time.  It is only meaningful with a cell: without one the
+        # volume it divides by is zero, and ASE's own convention is that an
+        # isolated molecule has no stress rather than an infinite one.
+        volume = atoms.get_volume() if atoms.cell.rank == 3 else 0.0
+        if volume > 0.0:
+            # Symmetrized because the analytic virials are built from outer
+            # products that are symmetric only up to rounding, and ASE's Voigt
+            # packing reads the upper triangle and would silently keep the
+            # asymmetry.
+            self.results["stress"] = full_3x3_to_voigt_6_stress(
+                0.5 * (virial + virial.T) / volume
+            )
         if "atom" in terms and self.acks2.Q is not None:
             charges = np.zeros(len(atoms))
             charges[terms["atom"]["atoms"][:, 0]] = self.acks2.Q

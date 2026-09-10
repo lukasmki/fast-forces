@@ -1,6 +1,7 @@
 from ase import units
-from scipy.special import erf
 import numpy as np
+
+from .ewald import Ewald, MinimumImage, contract_pairs
 
 
 class ACKS2:
@@ -17,6 +18,17 @@ class ACKS2:
     whenever the atom terms happen to be collected in index order, which is the
     common case, so the error only appears once a molecule is matched onto the
     live system in a different order.
+
+    **The charge kernel is an object, not a matrix**, and everything that
+    touches the geometry goes through it -- see `forcefield/ewald.py`.  Under
+    open or partially periodic boundaries it is `MinimumImage`, the nearest-image
+    `erf(2 r) / r` this class used to inline.  Under full periodicity it is
+    `Ewald`, which sums that kernel over every image; the two differ in the
+    energy, in the forces, and in the fact that the periodic `K_ii` is nonzero,
+    because an atom does interact with its own images even though it does not
+    interact with itself.  A method here that needs the kernel takes it as an
+    optional argument and falls back to `MinimumImage`, so calling any of them
+    with a bare `rij` still means the open-boundary problem.
     """
 
     CCOUL = 14.4  # eV
@@ -26,8 +38,10 @@ class ACKS2:
         self.u = None
         self.A = None
         self.state_hash = None
+        self.ewald = None
+        self.ewald_key = None
 
-    def build_system(self, rij, params):
+    def build_system(self, rij, params, kernel=None):
         """Assemble the ACKS2 linear system `A x = b`, in term order.
 
         `x` is `[Q, u, lambda_total, lambda_KS]`: the charges, the Kohn-Sham
@@ -35,22 +49,29 @@ class ACKS2:
         is symmetric, which is what lets the force adjoint below reuse it
         untransposed.
 
-        Only two blocks of `A` depend on the geometry -- the off-diagonal
-        Coulomb block and the softness block -- and `compute_response_forces`
-        differentiates exactly those two.  Anything geometry-dependent added
-        here must be differentiated there as well, or the forces stop being the
-        gradient of the energy.
+        Only two blocks of `A` depend on the geometry -- the Coulomb block and
+        the softness block -- and `compute_response_forces` differentiates
+        exactly those two.  Anything geometry-dependent added here must be
+        differentiated there as well, or the forces stop being the gradient of
+        the energy.
+
+        The hardness is *added* to the Coulomb diagonal rather than overwriting
+        it.  With open boundaries there is nothing there to overwrite, but the
+        periodic kernel carries an atom's interaction with its own images on
+        that diagonal, and it belongs in the equilibration alongside `2 eta`.
         """
         natoms = rij.shape[0]
         neqns = 2 * natoms + 2
         diag = np.diag_indices(natoms)
         atom = np.arange(natoms)
+        if kernel is None:
+            kernel = MinimumImage(rij)
 
         A = np.zeros((neqns, neqns))
         b = np.zeros(neqns)
 
         # interaction
-        A[:natoms, :natoms] = erf(2 * rij) / (rij + np.finfo(np.float64).eps)
+        A[:natoms, :natoms] = kernel.matrix()
 
         # softness
         amp, decay = params["soft_amp"], params["soft_decay"]
@@ -66,7 +87,7 @@ class ACKS2:
         A[natoms : 2 * natoms, :natoms] = -np.eye(natoms)
 
         # diagonal
-        A[atom, atom] = 2.0 * params["eta"]
+        A[atom, atom] += 2.0 * params["eta"]
         b[:natoms] = -params["mu"]
 
         # Constraints
@@ -82,44 +103,48 @@ class ACKS2:
 
         return A, b
 
-    def solve_charges(self, rij, params):
+    def solve_charges(self, rij, params, kernel=None):
         """Charges, KS potentials and the system matrix.  All in term order."""
         natoms = rij.shape[0]
-        A, b = self.build_system(rij, params)
+        A, b = self.build_system(rij, params, kernel)
         x = np.linalg.solve(A, b)
         return x[:natoms], x[natoms : 2 * natoms], A
 
-    def compute_charges(self, rij, params):
+    def compute_charges(self, rij, params, kernel=None):
         """Solve the ACKS2 linear system.  All arguments are in term order."""
-        return self.solve_charges(rij, params)[0]
+        return self.solve_charges(rij, params, kernel)[0]
 
-    def compute_coulomb(self, Q, rij, vecs):
-        """Coulomb energy and forces.  All arguments and results in term order.
+    def compute_coulomb(self, Q, rij, vecs, kernel=None):
+        """Coulomb energy, forces and virial.  All arguments and results in term order.
 
         The charges are held fixed here, so this is only the explicit part of
         the gradient.  `compute_response_forces` supplies the dQ/dr part, and
         `__call__` adds the two; this method on its own is not the gradient of
         its own energy.
+
+        `W` is the weight the kernel is contracted against: the energy is
+        `sum_ij W_ij K_ij`, so `W` carries the 1/2 that halves the (i, j)/(j, i)
+        double count as well as the unit conversion constant, and the kernel
+        returns `dS/dr` and `dS/de` for that same sum.  The diagonal is not
+        masked off -- `K_ii` is zero under open boundaries and is a real
+        self-image interaction under periodic ones.
         """
-        diag = np.diag_indices(len(Q))
-        qiqj = Q[:, None] * Q[None, :]
-        qiqj[diag] = 0.0
-        r = rij + np.finfo(np.float64).eps
-        kernel = erf(2 * rij) / r
-        e = self.CCOUL * qiqj * kernel
-        e[diag] = 0.0  # zero the diagonal
-        e_tot = 0.5 * np.sum(e) * units.eV
+        if kernel is None:
+            kernel = MinimumImage(rij, vecs)
 
-        # forces: F_i = CCOUL * sum_j qi*qj * (pos_i-pos_j)/rij^3
-        # The energy 0.5-factor cancels because both e[i,j] and e[j,i] contribute to dE/d(pos_i)
-        dkernel_dr = (4 / np.sqrt(np.pi)) * np.exp(-4 * rij**2) / r - kernel / r
-        nij = vecs / (r[:, :, None])
-        f = -nij * self.CCOUL * qiqj[:, :, None] * dkernel_dr[:, :, None]
-        f_tot = np.sum(f, 1) * units.eV / units.Angstrom
-        return e_tot, f_tot
+        W = 0.5 * self.CCOUL * (Q[:, None] * Q[None, :])
+        e_tot = np.sum(W * kernel.matrix()) * units.eV
 
-    def compute_response_forces(self, Q, u, A, rij, vecs, params):
-        """The dQ/dr part of the force.  All arguments and results in term order.
+        dS_dr, dS_de = kernel.contract(W)
+        f_tot = -dS_dr * units.eV / units.Angstrom
+
+        # Virial at fixed `Q`, the explicit half of the strain derivative, in
+        # the same relationship to `e_tot` as `f_tot` is.
+        w_tot = dS_de * units.eV
+        return e_tot, f_tot, w_tot
+
+    def compute_response_forces(self, Q, u, A, rij, vecs, params, kernel=None):
+        """The dQ/dr part of the force, and its virial.  All arguments and results in term order.
 
         The charges are not independent of the geometry: they solve `A(r) x = b`
         with `b` geometry-free, so moving an atom moves every charge.  The
@@ -137,54 +162,71 @@ class ACKS2:
         which needs one extra solve rather than one per coordinate.  `A` is
         symmetric, so no transpose is required.
 
-        `dA/dr` is nonzero only in the two blocks `build_system` builds from
-        `rij`.  The softness block needs care: `X_ii = -sum_j X_ij`, so each
-        off-diagonal `bsoft_ij` appears in four entries of `X` and all four
-        contribute.
+        `dA/dr` is nonzero only in the two blocks `build_system` builds from the
+        geometry, and each is differentiated by contracting it against the
+        symmetric weight matrix that `-lam^T (dA/dr) x` puts on it.  The
+        softness block needs care: `X_ii = -sum_j X_ij`, so each off-diagonal
+        `bsoft_ij` appears in four entries of `X` and all four contribute.
         """
         natoms = len(Q)
         diag = np.diag_indices(natoms)
         r = rij + np.finfo(np.float64).eps
-        kernel = erf(2 * rij) / r
+        if kernel is None:
+            kernel = MinimumImage(rij, vecs)
 
         # dE/dx, nonzero only on the charge block.  The multiplier rows are
         # geometry-free and the energy does not depend on u.
-        dkernel = kernel.copy()
-        dkernel[diag] = 0.0
         gradient = np.zeros(A.shape[0])
-        gradient[:natoms] = self.CCOUL * (dkernel @ Q)
+        gradient[:natoms] = self.CCOUL * (kernel.matrix() @ Q)
         lam = np.linalg.solve(A, gradient)
         lam_q, lam_u = lam[:natoms], lam[natoms : 2 * natoms]
 
-        # d(A block)/d r_ij for the two geometry-dependent blocks
-        dkernel_dr = (4 / np.sqrt(np.pi)) * np.exp(-4 * rij**2) / r - kernel / r
-        dkernel_dr[diag] = 0.0
+        # -lam^T (dA/dr) x for the Coulomb block, as a weight on the kernel.
+        # Entry (i, j) and entry (j, i) each hold the whole pair term, so the
+        # weight is halved to match the convention `compute_coulomb` uses.
+        W = -0.5 * (lam_q[:, None] * Q[None, :] + lam_q[None, :] * Q[:, None])
+        coulomb_dr, coulomb_de = kernel.contract(W)
+
+        # The same for the softness block, which stays a nearest-image pair
+        # term at every boundary condition -- see `ewald.py`.
         amp, decay = params["soft_amp"], params["soft_decay"]
         tau = 0.5 * (decay[:, None] + decay[None, :])
         dbsoft_dr = -(amp[:, None] * amp[None, :]) * np.exp(-rij / tau) / tau
         dbsoft_dr[diag] = 0.0
-
-        # -lam^T (dA/dr) x, accumulated per pair.  Entry (i, j) and entry
-        # (j, i) each hold the whole pair term, so the sum is halved to match
-        # the convention compute_coulomb uses for the explicit part.
-        coulomb = (
-            -(lam_q[:, None] * Q[None, :] + lam_q[None, :] * Q[:, None]) * dkernel_dr
+        W_soft = -0.5 * (
+            lam_u[:, None] * u[None, :]
+            + lam_u[None, :] * u[:, None]
+            - lam_u[:, None] * u[:, None]
+            - lam_u[None, :] * u[None, :]
         )
-        softness = (
-            -(
-                lam_u[:, None] * u[None, :]
-                + lam_u[None, :] * u[:, None]
-                - lam_u[:, None] * u[:, None]
-                - lam_u[None, :] * u[None, :]
-            )
-            * dbsoft_dr
-        )
-        dE_dr = 0.5 * (coulomb + softness)
+        soft_dr, soft_de = contract_pairs(W_soft * dbsoft_dr, vecs, r)
 
-        nij = vecs / (r[:, :, None])
-        return -2.0 * np.sum(dE_dr[:, :, None] * nij, axis=1)
+        # Both blocks are contracted as `dS/dr`; the force is minus that.
+        return -(coulomb_dr + soft_dr), coulomb_de + soft_de
 
-    def __call__(self, pos, pbc, cell, term_dict: dict) -> tuple[float, np.ndarray]:
+    def get_kernel(self, pos, vecs, rij, pbc, cell):
+        """The charge kernel for these boundary conditions, in term order.
+
+        Ewald needs all three directions periodic; a slab or a wire keeps the
+        nearest-image kernel, which is what it had before periodic
+        electrostatics existed here.  The cell-dependent half of the Ewald setup
+        -- the splitting parameter and the reciprocal vectors -- is cached, so a
+        fixed cell builds it once and an NPT trajectory rebuilds it per step.
+        """
+        if not np.all(pbc):
+            return MinimumImage(rij, vecs)
+
+        cell = np.asarray(cell, dtype=float)
+        key = cell.tobytes()
+        if self.ewald is None or key != self.ewald_key:
+            self.ewald = Ewald(cell)
+            self.ewald_key = key
+        return self.ewald.bind(pos, vecs, rij)
+
+    def __call__(
+        self, pos, pbc, cell, term_dict: dict
+    ) -> tuple[float, np.ndarray, np.ndarray]:
+        pbc = np.asarray(pbc, dtype=bool)
         vecs = pos[:, None, :] - pos[None, :, :]
         if np.any(pbc):
             F = vecs @ np.linalg.inv(cell)
@@ -199,20 +241,28 @@ class ACKS2:
         sub = np.ix_(indices, indices)
         vecs = vecs[sub]
         rij = np.sqrt(np.sum(vecs * vecs, -1))
+        kernel = self.get_kernel(pos[indices], vecs, rij, pbc, cell)
 
-        # Cache on the parameters as well as the geometry: the same positions
-        # with a different set of atom terms is a different problem.
-        state_hash = hash((pos.tobytes(), indices.tobytes()))
+        # Cache on the parameters and the cell as well as the geometry: the same
+        # positions with a different set of atom terms is a different problem,
+        # and so is the same system in a cell a barostat has just rescaled.
+        state_hash = hash(
+            (pos.tobytes(), indices.tobytes(), np.asarray(cell, dtype=float).tobytes())
+        )
         if self.Q is None or state_hash != self.state_hash:
-            self.Q, self.u, self.A = self.solve_charges(rij, params)
+            self.Q, self.u, self.A = self.solve_charges(rij, params, kernel)
             self.state_hash = state_hash
 
-        e_tot, f_tot = self.compute_coulomb(self.Q, rij, vecs)
-        f_tot = f_tot + self.compute_response_forces(
-            self.Q, self.u, self.A, rij, vecs, params
+        e_tot, f_tot, w_tot = self.compute_coulomb(self.Q, rij, vecs, kernel)
+        f_resp, w_resp = self.compute_response_forces(
+            self.Q, self.u, self.A, rij, vecs, params, kernel
         )
+        f_tot = f_tot + f_resp
+        w_tot = w_tot + w_resp
 
-        # scatter term-ordered forces back to global atom order
+        # scatter term-ordered forces back to global atom order.  The virial
+        # needs no scatter: it is a single 3x3 sum over pairs, not a per-atom
+        # quantity, so term order and global order give the same matrix.
         forces = np.zeros_like(pos)
         forces[indices] = f_tot
-        return e_tot, forces
+        return e_tot, forces, w_tot

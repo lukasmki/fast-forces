@@ -6,8 +6,7 @@ hand, so the serialized file is valid by construction.
 The energy expressions here are transcriptions of the `forcefield` module's
 `compute_*` methods, not of the example XML -- where the two disagree, the
 calculator wins, because an exported file that does not reproduce the
-calculator it was fit with is worse than useless.  Three places where that
-matters:
+calculator it was fit with is worse than useless.  Where that matters:
 
   * `dihedralangle` and `dihedralangleangle` use `cos(angle) - cos(theta0)`,
     matching the implementation; the example XML uses the raw angle difference
@@ -16,6 +15,14 @@ matters:
     here; the example XML carries the bare numbers, which OpenMM would read as
     kJ/mol.
   * The Morse bond keeps its `-D` offset and its Hulburt-Hirschfelder `c` term.
+  * `angle` is `0.5*k*(cos-cos0)^2`, the convention the example files are
+    written in, so an angle `k` means the same well on both sides.
+  * Both nonbonded pair terms carry a Fermi switch, and both are summed over
+    *every* pair with no exclusions -- `zbl.taper` switching ZBL off outside
+    1.5 A, `lj.switch` switching the 12-6 on outside 2.2 A, and
+    `lj.CORE_FRACTION` replacing the `r**-12` divergence with a tangent.  A
+    transcription that dropped any of those would be a different force field at
+    exactly the separations bonded pairs sit at.
 
 Electrostatics is the one place the export cannot be faithful.  ACKS2 solves for
 the charges at every geometry; OpenMM has no charge-equilibration force, so the
@@ -29,8 +36,10 @@ import numpy as np
 from ase.data import atomic_masses
 
 from ..forcefield.acks2 import ACKS2
+from ..forcefield.lj import CORE_FRACTION, SWITCH_RADIUS, SWITCH_WIDTH
+from ..forcefield.qforce import SHAPE_DECAY
 from ..forcefield.zbl import CCOUL as ZBL_CCOUL
-from ..forcefield.zbl import PHI_B, PHI_C, SCREENING_LENGTH
+from ..forcefield.zbl import PHI_B, PHI_C, SCREENING_LENGTH, TAPER_RADIUS, TAPER_WIDTH
 from . import units as u
 
 # Clamps from `QForce.compute_bondbond` / `compute_bondangle`, in eV.
@@ -38,8 +47,16 @@ CLIP_BONDBOND = -10.0
 CLIP_BONDANGLE = -20.0
 
 # The Hulburt-Hirschfelder decay `QForce.compute_bond` defaults to.  The export
-# formats have no slot for it, so it has to stay at the default on both sides.
-HH_DECAY = 2.5
+# formats have no slot for it, so it has to stay at the default on both sides;
+# it is imported rather than restated so the two cannot drift.
+HH_DECAY = SHAPE_DECAY
+
+# Both Fermi switches overflow `exp` if handed a raw exponent -- these forces are
+# evaluated with no cutoff, so `r` reaches the box diagonal.  The evaluators clip
+# at 500 in numpy; Lepton has no `clip`, so `max(min(...))` does it here.  300 is
+# well past where either switch resolves anything (`exp(-300)` is 5e-131) and
+# stays inside double range, which 500 does not.
+SWITCH_CLAMP = 300.0
 
 # Screening width of the ACKS2 Coulomb kernel, `erf(2 r)/r` with r in Angstrom.
 ACKS2_BETA = 2.0
@@ -48,6 +65,8 @@ MORSE = (
     "D*((1-exp(-a*(r-r0)))^2 - 1 + c*s*s*s*exp(-hh_decay*s));"
     " s=a*max(r-r0,0); a=sqrt(k/(2*D))"
 )
+# `QForce.compute_angle`, transcribed -- 1/2 included, which is also the
+# convention the example XML and jsonl are written in.
 ANGLE = "0.5*k*(cos(theta)-cos(theta0))^2"
 BONDBOND = "max(k*(distance(p1,p2)-r1_0)*(distance(p3,p4)-r2_0), clip_bb)"
 BONDANGLE = "max(k*(cos(angle(p1,p2,p3))-cos(theta0))*(distance(p4,p5)-r0), clip_ba)"
@@ -63,12 +82,25 @@ DIHEDRALANGLEANGLE = (
     "*(cos(angle(p1,p2,p3))-cos(theta0_1))*(cos(angle(p2,p3,p4))-cos(theta0_2))"
 )
 PERIODICDIHEDRAL = "k*(1+cos(n*theta-phi0))"
+# `lj.pair_potential`, transcribed: a 12-6 that is switched *on* outside
+# `SWITCH_RADIUS`, and that continues along its own tangent inside
+# `CORE_FRACTION * sigma` instead of diverging as `r**-12`.  Both pieces matter
+# here and not only in the calculator -- the term is applied to bonded pairs, so
+# the exported system evaluates it at bond lengths too.
 LENNARDJONES = (
-    "4*B*(A12/r12-A6/r6); r12=r6*r6; r6=r^6; A12=A6*A6; A6=A^6;"
-    " B=sqrt(B1*B2); A=sqrt(A1*A2)"
+    "g*(u+du*min(r-rc,0));"
+    " g=1/(1+exp(zs)); zs=max(-sw_clamp,min(sw_clamp,-(r-sw_r)/sw_w));"
+    " u=4*B*(A12/re12-A6/re6); du=-(24*B/re)*(2*A12/re12-A6/re6);"
+    " re12=re6*re6; re6=re^6; re=max(r,rc); rc=core_frac*A;"
+    " A12=A6*A6; A6=A^6; B=sqrt(B1*B2); A=sqrt(A1*A2)"
 )
+# `zbl.pair_potential`, transcribed, including `zbl.taper`: the screened-nuclear
+# form is switched off outside `TAPER_RADIUS` so that it does not reach into the
+# hydrogen bond.  Omitting the taper here would leave the exported system with a
+# repulsion the calculator no longer has.
 ZBL = (
-    "zk*(pc0*exp(-pb0*x)+pc1*exp(-pb1*x)+pc2*exp(-pb2*x)+pc3*exp(-pb3*x))/r;"
+    "f*zk*(pc0*exp(-pb0*x)+pc1*exp(-pb1*x)+pc2*exp(-pb2*x)+pc3*exp(-pb3*x))/r;"
+    " f=1/(1+exp(zt)); zt=max(-sw_clamp,min(sw_clamp,(r-taper_r)/taper_w));"
     " x=r/a; a=screen/(z1^0.23+z2^0.23); zk=zbl_ccoul*z1*z2"
 )
 COULOMB = "acks2_ccoul*q1*q2*erf(beta*r)/r"
@@ -135,24 +167,24 @@ def _nonbonded_forces(params, positions, edge):
     import openmm
 
     forces = []
-    exclusions = params.exclusions
-    pairs = (
-        [
-            (i, j)
-            for i in range(len(params.numbers))
-            for j in range(i + 1, len(params.numbers))
-            if exclusions[i, j]
-        ]
-        if exclusions is not None
-        else []
-    )
 
     if "lennardjones" in params.terms:
+        # No exclusions, deliberately: `LennardJones` dropped them, so adding
+        # them here would make the exported system disagree with the calculator
+        # it was fit with on every 1-2, 1-3 and 1-4 pair.  `params.exclusions`
+        # is still carried, and is still the right mask -- nothing consumes it.
         lj = openmm.CustomNonbondedForce(LENNARDJONES)
         lj.setName("LennardJones")
         lj.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
         lj.addPerParticleParameter("A")
         lj.addPerParticleParameter("B")
+        # In Angstrom in `lj`, which works in ASE units like the rest of the
+        # `forcefield` package, so both take `u.LENGTH` here.  `core_frac` is a
+        # fraction of sigma and converts by 1.
+        lj.addGlobalParameter("sw_r", SWITCH_RADIUS * u.LENGTH)
+        lj.addGlobalParameter("sw_w", SWITCH_WIDTH * u.LENGTH)
+        lj.addGlobalParameter("core_frac", CORE_FRACTION)
+        lj.addGlobalParameter("sw_clamp", SWITCH_CLAMP)
         sigma = _converted(params, "lennardjones", "sigma")
         eps = _converted(params, "lennardjones", "eps")
         order = np.asarray(params.terms["lennardjones"]["atoms"])[:, 0]
@@ -160,8 +192,6 @@ def _nonbonded_forces(params, positions, edge):
         for atom in range(len(params.numbers)):
             i = by_index[atom]
             lj.addParticle([float(sigma[i]), float(eps[i])])
-        for i, j in pairs:
-            lj.addExclusion(i, j)
         forces.append(lj)
 
     # ZBL takes no exclusions -- see the `ZBL` docstring; it is a function of the
@@ -172,6 +202,10 @@ def _nonbonded_forces(params, positions, edge):
     zbl.addPerParticleParameter("z")
     zbl.addGlobalParameter("screen", SCREENING_LENGTH * u.LENGTH)
     zbl.addGlobalParameter("zbl_ccoul", ZBL_CCOUL * u.ENERGY * u.LENGTH)
+    # In Angstrom in `zbl`, which works in ASE units throughout.
+    zbl.addGlobalParameter("taper_r", TAPER_RADIUS * u.LENGTH)
+    zbl.addGlobalParameter("taper_w", TAPER_WIDTH * u.LENGTH)
+    zbl.addGlobalParameter("sw_clamp", SWITCH_CLAMP)
     for k, (c, b) in enumerate(zip(PHI_C, PHI_B, strict=True)):
         zbl.addGlobalParameter(f"pc{k}", c)
         zbl.addGlobalParameter(f"pb{k}", b)

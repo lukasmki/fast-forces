@@ -1,8 +1,15 @@
-"""The one place the export conventions are written down.
+"""The one place the q-force unit convention is written down.
 
 Both export formats are OpenMM-flavoured: lengths in nm, energies in kJ/mol.
-The calculator works in ASE units (Angstrom, eV).  Every conversion between the
-two lives in this table, so the two exporters cannot drift from each other.
+The package holds its parameters in ASE units (Angstrom, eV).  Every conversion
+between the two lives in this table, so the two exporters cannot drift from
+each other.
+
+This is an *export* table and nothing else.  All four evaluators -- `QForce`,
+`ACKS2`, `LennardJones` and `ZBL` -- work in eV and Angstrom throughout and read
+`Parameters.terms` as it stands, so the conversion happens exactly twice in the
+life of a parameter: once when a jsonl is read, once when one is written.  The
+`atom` parameters are the exception in the other direction, and convert by 1.
 
 `UNIT_POWERS[term][parameter]` is `(length_power, energy_power)`, the dimension
 of that parameter.  A bond force constant is an energy over a length squared,
@@ -33,7 +40,14 @@ UNIT_POWERS: dict[str, dict[str, tuple[int, int]]] = {
         "soft_scale": (0, 0),
     },
     "lennardjones": {"sigma": (1, 0), "eps": (0, 1)},
-    "bond": {"r0": (1, 0), "k": (-2, 1), "D": (0, 1), "c": (0, 0)},
+    # `b`, the Hulburt-Hirschfelder decay, multiplies the dimensionless
+    # `s = a*(r - r0)`, so it converts by 1.  Nothing here writes it -- the fit
+    # leaves it at `qforce.SHAPE_DECAY` -- but a jsonl that carries it has to
+    # round trip rather than raise.
+    "bond": {"r0": (1, 0), "k": (-2, 1), "D": (0, 1), "c": (0, 0), "b": (0, 0)},
+    # `QForce.compute_angle` and `export.openmm.ANGLE` are both
+    # `0.5*k*(cos-cos0)^2`, so `k` is a plain energy on both sides and only the
+    # energy unit changes.
     "angle": {"theta0": (0, 0), "k": (0, 1)},
     "bondbond": {"r1_0": (1, 0), "r2_0": (1, 0), "k": (-2, 1)},
     "bondangle": {"theta0": (0, 0), "r0": (1, 0), "k": (-1, 1)},
