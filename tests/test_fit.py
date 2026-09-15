@@ -14,40 +14,42 @@ from fastforces import (
 )
 from fastforces.topology import enumerate_terms
 
-# Equilibrium values the example OpenMM XML carries for H2O2, in Angstrom and
-# radians.  They came from wB97X-V; GFN2-xTB lands close enough that they are a
-# meaningful check on the geometry the fit is built on.
-EXAMPLE_R_OH = 0.96566477
-EXAMPLE_R_OO = 1.42088398
-EXAMPLE_THETA = 1.78183281
+# Reference equilibrium values for H2O2, in Angstrom and radians.  They came
+# from wB97X-V; GFN2-xTB lands close enough that they are a meaningful check on
+# the geometry the fit is built on.  The fixture files are acetonitrile -- this
+# module fits H2O2 from SMILES at runtime and reads no file, so the two do not
+# have to agree.
+REFERENCE_R_OH = 0.96566477
+REFERENCE_R_OO = 1.42088398
+REFERENCE_THETA = 1.78183281
 
 pytestmark = pytest.mark.slow
 
 
-def test_equilibrium_geometry_matches_the_example(h2o2_fit):
+def test_equilibrium_geometry_matches_the_reference(h2o2_fit):
     _, _, path = h2o2_fit
     equilibrium = io.read_training_set(path).equilibrium
     positions = equilibrium.get_positions()
     graph = enumerate_terms(equilibrium)
     bonds = [tuple(sorted(row)) for row in graph.atoms["bond"]]
     lengths = sorted(np.linalg.norm(positions[i] - positions[j]) for i, j in bonds)
-    assert lengths[0] == pytest.approx(EXAMPLE_R_OH, abs=0.02)
-    assert lengths[-1] == pytest.approx(EXAMPLE_R_OO, abs=0.02)
+    assert lengths[0] == pytest.approx(REFERENCE_R_OH, abs=0.02)
+    assert lengths[-1] == pytest.approx(REFERENCE_R_OO, abs=0.02)
 
 
-def test_fitted_angle_matches_the_example(h2o2_fit):
+def test_fitted_angle_matches_the_reference(h2o2_fit):
     _, params, _ = h2o2_fit
     theta0 = params.terms["angle"]["kwargs"]["theta0"]
     assert np.allclose(theta0, theta0[0])  # one shared class
-    assert theta0[0] == pytest.approx(EXAMPLE_THETA, abs=np.radians(3))
+    assert theta0[0] == pytest.approx(REFERENCE_THETA, abs=np.radians(3))
 
 
 def test_bond_r0_is_compressed_below_the_true_length(h2o2_fit):
     """The design property: `r0` balances the nonbonded baseline.
 
     `ZBL` contributes ~20 eV/A of repulsion at a normal bond length and has no
-    switching function, so the bond has to be pre-compressed to pull back.  The
-    example force field's O-H `r0` is 0.70 A against a true 0.97 A for the same
+    switching function, so the bond has to be pre-compressed to pull back.  A fitted
+    H2O2 force field's O-H `r0` is 0.70 A against a true 0.97 A for the same
     reason.
     """
     _, params, path = h2o2_fit

@@ -5,10 +5,10 @@ constants against the reference calculator; the nonbonded parameters here are
 subtracted from the reference as a fixed baseline and are never refined, so
 they set the residual the bonded terms have to absorb.
 
-Provenance of each table is documented at its definition.  Where
-`examples/h2o2_dynamictopology_format.jsonl` pins a value for H or O, that value
-wins over the generic table -- it came out of a real fit and the generic tables
-are calibrated to reproduce it.
+Provenance of each table is documented at its definition.  Where an earlier
+hand-checked H2O2 force field pinned a value for H or O, that value wins over
+the generic table -- it came out of a real fit and the generic tables are
+calibrated to reproduce it.
 """
 
 import numpy as np
@@ -73,7 +73,7 @@ MULLIKEN_ETA: dict[int, float] = {
 
 # The ACKS2 softness parameters have no tabulated experimental analogue.  Both
 # are taken linear in the covalent radius, with the two coefficients fixed by
-# the H and O values in `examples/h2o2_dynamictopology_format.jsonl`:
+# the H and O values of that hand-checked H2O2 force field:
 #
 #     H: r_cov 0.31 -> amp 2.09682, decay 0.26887
 #     O: r_cov 0.66 -> amp 3.88211, decay 0.43584

@@ -108,6 +108,6 @@ exerts no force at all, so it could never balance that.  The fit therefore
 compresses r0 until the bond pulls hard enough to cancel ZBL at the real
 geometry, making r0 an effective parameter rather than a measurement.
 
-The reference files in this directory are built the same way: the O-H `r0` in
-h2o2_dynamictopology_format.jsonl is 0.0698 nm against a true bond length of
-0.0966 nm, while the `bondangle` cross term keeps the true 0.142 nm.""")
+The reference files in `tests/` are built the same way: the C-H `r0` in
+acetonitrile.jsonl is 0.0746 nm against a true bond length of 0.1089 nm, while
+the `bondangle` cross term keeps the true 0.1437 nm C-C distance.""")

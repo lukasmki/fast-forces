@@ -3,10 +3,10 @@
 This module decides which terms exist and which of them share parameters.  It is
 pure data in, pure data out -- no reference calculator, no fitting.
 
-Term enumeration follows `examples/h2o2_dynamictopology_format.jsonl` slot for
-slot; that file is the specification for what a "complete" set of terms means
-here, and the counts it implies for H2O2 (3 bonds, 2 angles, 2 bondbond,
-4 bondangle, 1 angleangle, 1 proper dihedral) are asserted in the tests.
+Term enumeration follows `tests/acetonitrile.jsonl` slot for slot; that file is
+the specification for what a "complete" set of terms means here, and the counts
+it implies for acetonitrile (5 bonds, 7 angles, 7 bondbond, 14 bondangle,
+15 angleangle, 12 proper dihedrals) are asserted in the tests.
 """
 
 from dataclasses import dataclass, field
@@ -113,9 +113,10 @@ class Topology:
 def perceive(atoms: Atoms) -> nx.Graph:
     """Molecular graph for `atoms`.
 
-    Prefers `atoms.info["connectivity"]`, which is what both `examples/h2o2.xyz`
-    and `calculators.pyscf.PySCFCalculator` write -- a perceived bond order beats
-    a distance cutoff.  Falls back to `molify.ase2networkx`.
+    Prefers `atoms.info["connectivity"]`, which is what `build`, the training
+    files `io.write_training_set` writes and `calculators.pyscf.PySCFCalculator`
+    all carry -- a perceived bond order beats a distance cutoff.  Falls back to
+    `molify.ase2networkx`.
     """
     connectivity = atoms.info.get("connectivity")
     if connectivity is not None and len(connectivity):
