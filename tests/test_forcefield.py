@@ -9,10 +9,13 @@ of bug that shows up only as a force field that disagrees with its own fit.
 The jsonl's nm and kJ/mol are `export/units.py`'s business alone.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
 from fastforces.forcefield.acks2 import ACKS2
+from fastforces.forcefield.coulomb import Coulomb
 from fastforces.forcefield.lj import CORE_FRACTION, LennardJones
 from fastforces.forcefield.qforce import QForce
 from fastforces.forcefield.zbl import ZBL
@@ -175,6 +178,122 @@ def test_acks2_gradient(random_positions):
     forces = ACKS2()(random_positions, PBC, CELL, terms)[1]
     numeric = _numeric_forces(energy_of, random_positions, step=1e-5)
     assert np.allclose(forces, numeric, atol=1e-5)
+
+
+NUMBERS = np.array([8, 8, 1, 1, 6, 7, 1, 1])
+
+# Charges that sum to zero, which is what `ewald` assumes of a periodic sum.
+CHARGES = np.array([-0.5, -0.4, 0.25, 0.25, 0.3, -0.35, 0.2, 0.25])
+
+
+def _coulomb_terms(charges=CHARGES, indices=None):
+    charges = np.asarray(charges, dtype=float)
+    if indices is None:
+        indices = np.arange(len(charges))
+    return {
+        "coulomb": {
+            "atoms": np.asarray(indices)[:, None],
+            "kwargs": {"q": charges},
+        }
+    }
+
+
+def test_coulomb_gradient(random_positions):
+    coulomb = Coulomb()
+    terms = _coulomb_terms()
+    forces = coulomb(random_positions, PBC, CELL, terms)[1]
+    numeric = _numeric_forces(
+        lambda p: Coulomb()(p, PBC, CELL, terms)[0], random_positions
+    )
+    assert np.allclose(forces, numeric, atol=1e-6)
+
+
+def test_coulomb_needs_no_response_term(random_positions):
+    """The whole point of the term: fixed `q` makes `coulomb_sum` the gradient.
+
+    `ACKS2` needs `compute_response_forces` on top of the same sum because its
+    charges move with the geometry.  This asserts the other half of that
+    statement -- that at fixed charges the explicit gradient is already exact --
+    by checking `ACKS2.compute_coulomb`, the shared piece, against
+    `Coulomb.__call__` on the same charges.
+    """
+    terms = _coulomb_terms()
+    vecs = random_positions[:, None, :] - random_positions[None, :, :]
+    rij = np.sqrt(np.sum(vecs * vecs, -1))
+    explicit = ACKS2().compute_coulomb(CHARGES, rij, vecs)
+    whole = Coulomb()(random_positions, PBC, CELL, terms)
+
+    assert whole[0] == pytest.approx(explicit[0])
+    assert np.allclose(whole[1], explicit[1])
+    assert np.allclose(whole[2], explicit[2])
+
+
+def test_coulomb_reproduces_the_acks2_energy_at_the_solved_charges(random_positions):
+    """Both terms sum the same kernel, so the energy agrees where `Q` does.
+
+    This is what makes the fixed-charge term a *replacement* for ACKS2 rather
+    than a second, differently-screened electrostatics: hand it the charges
+    ACKS2 solved for and it reproduces ACKS2's energy exactly.  The forces do
+    not follow, and are not compared -- ACKS2's carry the `dQ/dr` response that
+    fixed charges have no counterpart for.
+    """
+    from fastforces.elements import acks2_defaults
+
+    terms = {
+        "atom": {
+            "atoms": np.arange(len(NUMBERS))[:, None],
+            "kwargs": acks2_defaults(NUMBERS),
+        }
+    }
+    acks2 = ACKS2()
+    reference = acks2(random_positions, PBC, CELL, terms)[0]
+
+    fixed = Coulomb()(random_positions, PBC, CELL, _coulomb_terms(acks2.Q))[0]
+    assert fixed == pytest.approx(reference, rel=1e-12)
+
+
+def test_coulomb_publishes_its_charges(random_positions):
+    """`.Q` is how the calculator reads charges off either electrostatic term."""
+    coulomb = Coulomb()
+    coulomb(random_positions, PBC, CELL, _coulomb_terms())
+    assert np.allclose(coulomb.Q, CHARGES)
+
+
+def test_coulomb_skips_atoms_with_no_term(random_positions):
+    """Only the atoms that carry a `coulomb` term are in the sum."""
+    subset = np.array([0, 1, 2, 3])
+    terms = _coulomb_terms(CHARGES[subset] - CHARGES[subset].mean(), subset)
+    energy, forces, _ = Coulomb()(random_positions, PBC, CELL, terms)
+
+    assert np.allclose(forces[4:], 0.0)
+    # and it is the same number as the same four atoms on their own
+    alone = Coulomb()(
+        random_positions[subset],
+        PBC,
+        CELL,
+        _coulomb_terms(CHARGES[subset] - CHARGES[subset].mean()),
+    )[0]
+    assert energy == pytest.approx(alone)
+
+
+def test_coulomb_warns_once_on_a_charged_periodic_system(random_positions):
+    """The Ewald `k = 0` term is omitted, which needs `sum q = 0`."""
+    charged = CHARGES + 1.0 / len(CHARGES)
+    coulomb = Coulomb()
+    terms = _coulomb_terms(charged)
+    with pytest.warns(UserWarning, match="net charge"):
+        coulomb(random_positions, STRAIN_PBC, STRAIN_CELL, terms)
+    # once per evaluator, not once per step of an MD run
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        coulomb(random_positions, STRAIN_PBC, STRAIN_CELL, terms)
+
+
+def test_coulomb_does_not_warn_under_open_boundaries(random_positions):
+    """An isolated ion is an ordinary thing to evaluate; there is no `k = 0`."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        Coulomb()(random_positions, PBC, CELL, _coulomb_terms(CHARGES + 0.125))
 
 
 def test_angle_convention(random_positions):
@@ -390,6 +509,29 @@ def test_acks2_virial(random_positions):
         lambda p, c: ACKS2()(p, STRAIN_PBC, c, terms)[0], random_positions
     )
     assert np.allclose(analytic, numeric, rtol=1e-5, atol=1e-8)
+
+
+def test_coulomb_virial(random_positions):
+    """Fully periodic, so this is the Ewald lattice sum's strain derivative."""
+    coulomb = Coulomb()
+    terms = _coulomb_terms()
+    analytic = coulomb(random_positions, STRAIN_PBC, STRAIN_CELL, terms)[2]
+    numeric = _numeric_virial(
+        lambda p, c: Coulomb()(p, STRAIN_PBC, c, terms)[0], random_positions
+    )
+    assert np.allclose(analytic, numeric, rtol=1e-5, atol=1e-8)
+
+
+def test_coulomb_periodic_gradient(random_positions):
+    """The force under the lattice sum, which `MinimumImage` does not cover."""
+    terms = _coulomb_terms()
+    forces = Coulomb()(random_positions, STRAIN_PBC, STRAIN_CELL, terms)[1]
+    numeric = _numeric_forces(
+        lambda p: Coulomb()(p, STRAIN_PBC, STRAIN_CELL, terms)[0],
+        random_positions,
+        step=1e-5,
+    )
+    assert np.allclose(forces, numeric, atol=1e-6)
 
 
 @pytest.mark.parametrize("term", sorted(TERMS))

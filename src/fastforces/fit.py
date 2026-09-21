@@ -72,11 +72,11 @@ import numpy as np
 from scipy.optimize import least_squares, lsq_linear
 
 from . import elements
-from .forcefield.acks2 import ACKS2
+from .forcefield import electrostatic_evaluator
 from .forcefield.lj import LennardJones
 from .forcefield.qforce import QForce
 from .forcefield.zbl import ZBL
-from .params import Parameters
+from .params import ELECTROSTATIC_TERMS, Parameters
 from .topology import Topology
 
 # Which kwargs of each term are read off the equilibrium geometry, and from
@@ -125,6 +125,14 @@ class FitConfig:
     regularization: float = 1e-3
     seed: int = 0
     bond_form: str = "morse"
+    # Which electrostatic term the fitted field carries.  `"acks2"` is the
+    # `atom` block, with the charges re-solved at every geometry from element
+    # defaults; `"fixed"` is the `coulomb` block, with one charge per atom taken
+    # from the reference calculation's Mulliken populations.  Neither is fitted
+    # -- both are part of the baseline the bonded terms are fit against -- so
+    # this changes what that baseline is, and a field refit with the other
+    # setting is a different force field rather than a reparametrized one.
+    electrostatics: str = "acks2"
     # A cap, not a target: the alternation exits on `cycle_tol` well inside it
     # (H2O2 takes 21 to 52 cycles depending on the training set).  The budget is
     # generous because a fit that stops early is no longer idempotent, and
@@ -286,7 +294,7 @@ def _seed_from(topology: Topology, initial: Parameters, n_atoms: int) -> _Seed:
                 f"initial `{term}` parameters index atom {int(atoms.max())}, but "
                 f"this training set has {n_atoms} atoms -- different molecule?"
             )
-        if term in ("atom", "lennardjones"):
+        if term in ("atom", "coulomb", "lennardjones"):
             seed.nonbonded[term] = block
             seed.n_seeded += len(atoms)
             continue
@@ -346,9 +354,21 @@ def _merge(default: np.ndarray, supplied: np.ndarray | None) -> np.ndarray:
 
 
 def _apply_nonbonded(params: Parameters, seed: _Seed) -> None:
-    """Replace element-table nonbonded defaults with the supplied values."""
+    """Replace element-table nonbonded defaults with the supplied values.
+
+    An electrostatic block in `initial` *replaces* whichever electrostatic block
+    this fit was configured with, rather than joining it: the two are
+    alternatives, a field carrying both is rejected by
+    `Parameters.electrostatics`, and "start from this field" most plainly means
+    "use its electrostatics too".  So an `initial` fitted with fixed charges
+    switches a default-configured fit over to them, and vice versa.
+    """
     n = len(params.numbers)
     for term, block in seed.nonbonded.items():
+        if term in ELECTROSTATIC_TERMS:
+            for other in ELECTROSTATIC_TERMS:
+                if other != term:
+                    params.terms.pop(other, None)
         slots = np.asarray(block["atoms"], dtype=int)[:, 0]
         kwargs = dict(params.terms.get(term, {}).get("kwargs", {}))
         for name, value in block["kwargs"].items():
@@ -412,6 +432,41 @@ def _basis_columns(topology, values, qforce, vecs, skip=("bond",)):
     return np.array(energies), np.array(forces), labels
 
 
+def _coulomb_block(topology: Topology, equilibrium) -> dict:
+    """The fixed-charge electrostatic block, read off the reference frame.
+
+    The charges are the `mulliken` array that
+    `calculators.pyscf.PySCFCalculator` writes onto every frame it evaluates
+    and `io.write_training_set` carries into the training file.  They are read
+    from the *equilibrium* frame, the same frame every other fixed value in this
+    fit is measured on, and they are not fit afterwards -- see
+    `FitConfig.electrostatics`.
+
+    They are then averaged within each atom equivalence class.  Mulliken
+    charges come out of a single geometry, so the three hydrogens of a methyl
+    group get three slightly different values, and freezing that asymmetry in
+    would put a spurious electrostatic torsion on a rotor that has none.  Every
+    other parameter in this fit is per-class for the same reason.  A class-wise
+    mean also leaves the total charge exactly where it was, which is what
+    `forcefield/ewald.py` needs of it.
+    """
+    if "mulliken" not in equilibrium.arrays:
+        raise ValueError(
+            "fitting with `electrostatics='fixed'` needs per-atom charges, and "
+            "this training set carries none: the equilibrium frame has no "
+            "`mulliken` array.  It is written by "
+            "`calculators.pyscf.PySCFCalculator`, so a set sampled with an "
+            "older version of it has to be re-sampled, or the fit has to run "
+            "with `electrostatics='acks2'`"
+        )
+    raw = np.asarray(equilibrium.get_array("mulliken"), dtype=float)
+    classes = np.asarray(topology.atom_classes, dtype=int)
+    counts = np.bincount(classes)
+    totals = np.bincount(classes, weights=raw)
+    q = (totals / counts)[classes]
+    return {"atoms": np.arange(len(raw))[:, None], "kwargs": {"q": q}}
+
+
 def _nonbonded(params, frames):
     """Energies and forces of the fixed nonbonded baseline, per frame.
 
@@ -420,10 +475,15 @@ def _nonbonded(params, frames):
     evaluates it.  What it contributes at a bond length is part of the baseline
     the bonded fit has to absorb, which is the same bargain `ZBL` already made.
 
+    The electrostatic term is whichever one `params` carries, evaluated through
+    the same factory `FastForces` uses, because this is the number the bonded
+    residuals are taken against: fit against one term and evaluate with the
+    other and every force constant is off by the difference.
+
     All three return a virial as well.  The fit works at fixed cell, so they are
     dropped here rather than carried through unused.
     """
-    acks2 = ACKS2()
+    electrostatic = electrostatic_evaluator(params)
     lj = LennardJones()
     zbl = ZBL()
     has_lj = "lennardjones" in params.terms
@@ -431,7 +491,11 @@ def _nonbonded(params, frames):
     for frame in frames:
         pos = frame.get_positions()
         pbc, cell = frame.pbc, np.array(frame.cell)
-        e1, f1, _ = acks2(pos, pbc, cell, params.terms)
+        e1, f1, _ = (
+            electrostatic(pos, pbc, cell, params.terms)
+            if electrostatic is not None
+            else (0.0, np.zeros_like(pos), None)
+        )
         e2, f2, _ = (
             lj(pos, pbc, cell, params.terms)
             if has_lj
@@ -572,8 +636,13 @@ def fit(
     # --- nonbonded baseline, never fit -------------------------------------
     params = Parameters(numbers=numbers, exclusions=topology.exclusions)
     index_column = np.arange(len(numbers))[:, None]
-    for term, kwargs in elements.defaults_for(numbers).items():
+    defaults = elements.defaults_for(numbers, config.electrostatics)
+    for term, kwargs in defaults.items():
         params.terms[term] = {"atoms": index_column.copy(), "kwargs": dict(kwargs)}
+    if config.electrostatics == "fixed":
+        # Not an element default, so it comes from the reference calculation
+        # rather than from `elements`.
+        params.terms["coulomb"] = _coulomb_block(topology, equilibrium)
     if seed is not None:
         _apply_nonbonded(params, seed)
 

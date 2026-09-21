@@ -1,14 +1,16 @@
-"""The ACKS2 charge kernel, with and without the periodic lattice sum.
+"""The smeared charge kernel, with and without the periodic lattice sum.
 
-ACKS2 needs the smeared-charge kernel
+Both electrostatic terms need the smeared-charge kernel
 
     g(r) = erf(GAMMA * r) / r
 
-in three places: as the Coulomb block of its linear system, as the energy
-`E = CCOUL/2 * Q.K.Q`, and as the `dE/dQ` that drives the charge-response
-adjoint.  Under periodic boundary conditions each of those is a lattice sum
-over every image rather than a nearest-image pair term, so this module puts the
-two behind one interface and `acks2.py` never branches on `pbc`:
+`ACKS2` needs it in three places: as the Coulomb block of its linear system, as
+the energy `E = CCOUL/2 * Q.K.Q`, and as the `dE/dQ` that drives the
+charge-response adjoint.  `Coulomb`, which carries fixed charges instead of
+solving for them, needs only the second.  Under periodic boundary conditions
+each of those is a lattice sum over every image rather than a nearest-image
+pair term, so this module puts the two behind one interface and neither
+`acks2.py` nor `coulomb.py` branches on `pbc`:
 
     kernel.matrix()    -> `K`, the (n, n) kernel matrix
     kernel.contract(W) -> `(dS/dr_i, dS/de_ab)` for `S = sum_ij W_ij K_ij`
@@ -40,10 +42,15 @@ reciprocal sum is the divergent one; regularizing it against a neutralizing
 background leaves a constant `-pi / (V kappa^2)` in every entry of `K`.  Adding
 any constant to every entry of `K` changes the energy by that constant times
 `(sum_i q_i)^2` and the ACKS2 rows by that constant times `sum_i q_i`, so with
-`sum_i q_i = 0` -- which `ACKS2.build_system` imposes as a hard constraint -- it
-drops out of the energy, the forces, the virial and the solved charges alike.
-It is therefore omitted.  A charged system would need it back, and would need a
-physical justification for what the compensating background is.
+`sum_i q_i = 0` it drops out of the energy, the forces, the virial and the
+solved charges alike.  It is therefore omitted.  A charged system would need it
+back, and would need a physical justification for what the compensating
+background is.
+
+`ACKS2.build_system` imposes that neutrality as a hard constraint, so it holds
+there by construction.  `Coulomb` carries whatever charges it is handed and
+cannot, so it warns when it is asked for a periodic energy with a net charge --
+see its module docstring.
 
 **Only the Coulomb block is summed over images.**  ACKS2's other
 geometry-dependent block, the bond softness, decays as `exp(-r / tau)` with
@@ -55,8 +62,15 @@ import numpy as np
 from scipy.special import erf
 
 
-# Charge-smearing width of the ACKS2 kernel `erf(GAMMA r) / r`, in 1/Angstrom.
+# Charge-smearing width of the kernel `erf(GAMMA r) / r`, in 1/Angstrom.
 GAMMA = 2.0
+
+# Coulomb constant in eV*Angstrom.  Both `ACKS2` and `Coulomb` multiply
+# `Q.K.Q` by it, and `export.openmm` writes it into the exported force, so it
+# lives here rather than on either class.  `zbl.CCOUL` is the same constant to
+# more digits and is deliberately left alone: it multiplies bare nuclear
+# charges, not fitted ones, so matching ASE's value there is meaningful.
+CCOUL = 14.4
 
 # Target relative error of the truncated lattice sum.  It sets `kappa` (through
 # the real-space sum, which is truncated at the nearest image) and the
@@ -108,6 +122,30 @@ def contract_pairs(coeff, vecs, r):
     return dS_dr, dS_de
 
 
+def coulomb_sum(Q, kernel, ccoul=CCOUL):
+    """`E = ccoul/2 * Q.K.Q` and its gradients, at fixed `Q`.
+
+    Shared by both electrostatic terms, which differ only in where `Q` comes
+    from: `ACKS2` solves for it and then adds the `dQ/dr` response on top,
+    while `Coulomb` carries it as a per-atom parameter and this is the whole
+    gradient.  Everything is in the caller's term order, and in eV and
+    Angstrom -- `ccoul` carries the units and nothing here converts.
+
+    `W` is the weight the kernel is contracted against: the energy is
+    `sum_ij W_ij K_ij`, so `W` carries the 1/2 that halves the (i, j)/(j, i)
+    double count as well as `ccoul`, and the kernel returns `dS/dr` and
+    `dS/de` for that same sum.  The diagonal is not masked off -- `K_ii` is
+    zero under open boundaries and is a real self-image interaction under
+    periodic ones.
+    """
+    W = 0.5 * ccoul * (Q[:, None] * Q[None, :])
+    energy = float(np.sum(W * kernel.matrix()))
+    dS_dr, dS_de = kernel.contract(W)
+    # The force is minus the gradient; the virial is `dE/de_ab` as it stands,
+    # in the same relationship to `energy` as the force is.
+    return energy, -dS_dr, dS_de
+
+
 class MinimumImage:
     """`erf(GAMMA r) / r` over the nearest image of each pair and nothing else.
 
@@ -137,7 +175,7 @@ class Ewald:
 
     Split in two because the expensive part -- choosing `kappa` and enumerating
     the reciprocal vectors -- depends only on the cell, while the trigonometric
-    tables depend on the positions.  `ACKS2` keeps one of these per cell.
+    tables depend on the positions.  `KernelCache` keeps one of these per cell.
 
     **Why the reciprocal vectors are chosen by integer index and not by `|k|`.**
     The obvious selection, `|k| <= k_max`, is discontinuous in the cell: a
@@ -206,7 +244,7 @@ class Ewald:
 class EwaldKernel:
     """The periodic kernel at one geometry.
 
-    `pos` is in ACKS2's term order, the same order as `vecs` and `rij`; only
+    `pos` is in the caller's term order, the same order as `vecs` and `rij`; only
     differences of positions ever enter, and `cos(k . r)` is invariant under a
     lattice translation, so neither the origin nor whether an atom has been
     wrapped into the cell matters.
@@ -278,3 +316,34 @@ class EwaldKernel:
             - np.eye(3) * Sk.sum()
         )
         return dS_dr, dS_de
+
+
+class KernelCache:
+    """The right kernel for the boundary conditions, with the setup cached.
+
+    Held by each electrostatic evaluator, because both face the same choice and
+    the same cost.  The cell-dependent half of the Ewald setup -- the splitting
+    parameter and the reciprocal vectors -- is the expensive part, so a fixed
+    cell builds it once and an NPT trajectory rebuilds it per step.
+    """
+
+    def __init__(self):
+        self.ewald = None
+        self.key = None
+
+    def get(self, pos, vecs, rij, pbc, cell):
+        """The kernel at this geometry, in the caller's term order.
+
+        Ewald needs all three directions periodic; a slab or a wire keeps the
+        nearest-image kernel, which is what it had before periodic
+        electrostatics existed here.
+        """
+        if not np.all(pbc):
+            return MinimumImage(rij, vecs)
+
+        cell = np.asarray(cell, dtype=float)
+        key = cell.tobytes()
+        if self.ewald is None or key != self.key:
+            self.ewald = Ewald(cell)
+            self.key = key
+        return self.ewald.bind(pos, vecs, rij)

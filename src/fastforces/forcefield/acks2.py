@@ -1,7 +1,6 @@
-from ase import units
 import numpy as np
 
-from .ewald import Ewald, MinimumImage, contract_pairs
+from .ewald import CCOUL, KernelCache, MinimumImage, contract_pairs, coulomb_sum
 
 
 class ACKS2:
@@ -31,15 +30,16 @@ class ACKS2:
     with a bare `rij` still means the open-boundary problem.
     """
 
-    CCOUL = 14.4  # eV
+    # eV*Angstrom.  Shared with `Coulomb` and with `export.openmm`, so it is
+    # defined in `ewald` and only re-exposed here.
+    CCOUL = CCOUL
 
     def __init__(self):
         self.Q = None
         self.u = None
         self.A = None
         self.state_hash = None
-        self.ewald = None
-        self.ewald_key = None
+        self.kernels = KernelCache()
 
     def build_system(self, rij, params, kernel=None):
         """Assemble the ACKS2 linear system `A x = b`, in term order.
@@ -120,28 +120,13 @@ class ACKS2:
         The charges are held fixed here, so this is only the explicit part of
         the gradient.  `compute_response_forces` supplies the dQ/dr part, and
         `__call__` adds the two; this method on its own is not the gradient of
-        its own energy.
-
-        `W` is the weight the kernel is contracted against: the energy is
-        `sum_ij W_ij K_ij`, so `W` carries the 1/2 that halves the (i, j)/(j, i)
-        double count as well as the unit conversion constant, and the kernel
-        returns `dS/dr` and `dS/de` for that same sum.  The diagonal is not
-        masked off -- `K_ii` is zero under open boundaries and is a real
-        self-image interaction under periodic ones.
+        its own energy.  That is the whole difference between this term and
+        `Coulomb`, which shares the sum below and stops there because its
+        charges really are fixed.
         """
         if kernel is None:
             kernel = MinimumImage(rij, vecs)
-
-        W = 0.5 * self.CCOUL * (Q[:, None] * Q[None, :])
-        e_tot = np.sum(W * kernel.matrix()) * units.eV
-
-        dS_dr, dS_de = kernel.contract(W)
-        f_tot = -dS_dr * units.eV / units.Angstrom
-
-        # Virial at fixed `Q`, the explicit half of the strain derivative, in
-        # the same relationship to `e_tot` as `f_tot` is.
-        w_tot = dS_de * units.eV
-        return e_tot, f_tot, w_tot
+        return coulomb_sum(Q, kernel, self.CCOUL)
 
     def compute_response_forces(self, Q, u, A, rij, vecs, params, kernel=None):
         """The dQ/dr part of the force, and its virial.  All arguments and results in term order.
@@ -205,23 +190,8 @@ class ACKS2:
         return -(coulomb_dr + soft_dr), coulomb_de + soft_de
 
     def get_kernel(self, pos, vecs, rij, pbc, cell):
-        """The charge kernel for these boundary conditions, in term order.
-
-        Ewald needs all three directions periodic; a slab or a wire keeps the
-        nearest-image kernel, which is what it had before periodic
-        electrostatics existed here.  The cell-dependent half of the Ewald setup
-        -- the splitting parameter and the reciprocal vectors -- is cached, so a
-        fixed cell builds it once and an NPT trajectory rebuilds it per step.
-        """
-        if not np.all(pbc):
-            return MinimumImage(rij, vecs)
-
-        cell = np.asarray(cell, dtype=float)
-        key = cell.tobytes()
-        if self.ewald is None or key != self.ewald_key:
-            self.ewald = Ewald(cell)
-            self.ewald_key = key
-        return self.ewald.bind(pos, vecs, rij)
+        """The charge kernel for these boundary conditions, in term order."""
+        return self.kernels.get(pos, vecs, rij, pbc, cell)
 
     def __call__(
         self, pos, pbc, cell, term_dict: dict

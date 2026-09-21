@@ -352,3 +352,117 @@ def test_the_refit_drift_is_the_stopping_tolerance(h2o2_fit):
         f"tightening cycle_tol barely helped ({drifts}); the fit may be walking "
         "a flat direction again rather than converging"
     )
+
+
+# ---------------------------------------------------------------------------
+# fixed point charges
+# ---------------------------------------------------------------------------
+
+
+def _with_mulliken(path, charges, out):
+    """Copy a training set, writing `charges` onto every frame as `mulliken`.
+
+    The fixture's reference calculator is GFN2-xTB, which writes no `mulliken`
+    array -- only `calculators.pyscf.PySCFCalculator` does -- so the charges are
+    injected here.  Their values do not matter to what these tests assert; that
+    they are carried from the file into the fitted field does.
+    """
+    data = io.read_training_set(path)
+    for frame in data.frames:
+        frame.set_array("mulliken", np.asarray(charges, dtype=float), float)
+    io.write_training_set(str(out), data.frames, meta=data.meta)
+    return str(out)
+
+
+def test_fixed_charges_come_off_the_training_file(tmp_path, h2o2_fit):
+    """`electrostatics='fixed'` builds a `coulomb` block and drops `atom`."""
+    _, params, path = h2o2_fit
+    # H2O2 as O, O, H, H: the two oxygens are one equivalence class and the two
+    # hydrogens another, and these are already symmetric so the class-wise mean
+    # leaves them alone.
+    charges = np.array([-0.4, -0.4, 0.4, 0.4])
+    fixed = fit_from_file(
+        _with_mulliken(path, charges, tmp_path / "charged.xyz"),
+        config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
+    )
+
+    assert fixed.electrostatics() == "coulomb"
+    assert "atom" not in fixed.terms
+    assert np.allclose(fixed.terms["coulomb"]["kwargs"]["q"], charges)
+    # the ACKS2 fit of the same molecule is the other way round
+    assert params.electrostatics() == "atom"
+
+
+def test_fixed_charges_are_averaged_within_an_equivalence_class(tmp_path, h2o2_fit):
+    """Asymmetric input charges come out symmetric, with the total preserved.
+
+    A single geometry's Mulliken charges put slightly different values on
+    symmetry-equivalent atoms, and freezing that in would give a rotor a
+    spurious electrostatic torsion.
+    """
+    _, _, path = h2o2_fit
+    lopsided = np.array([-0.5, -0.3, 0.45, 0.35])
+    fixed = fit_from_file(
+        _with_mulliken(path, lopsided, tmp_path / "lopsided.xyz"),
+        config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
+    )
+
+    q = np.asarray(fixed.terms["coulomb"]["kwargs"]["q"])
+    assert q[0] == pytest.approx(q[1])
+    assert q[2] == pytest.approx(q[3])
+    # a class-wise mean moves no charge between classes
+    assert q.sum() == pytest.approx(lopsided.sum())
+
+
+def test_fixed_charges_need_charges_in_the_file(h2o2_fit):
+    """A training set without them fails loudly rather than silently unscreened."""
+    _, _, path = h2o2_fit
+    with pytest.raises(ValueError, match="mulliken"):
+        fit_from_file(
+            path,
+            config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
+        )
+
+
+def test_the_fixed_charge_fit_is_as_accurate(tmp_path, h2o2_fit):
+    """Swapping the electrostatic baseline does not cost accuracy.
+
+    Neither term is fitted -- both are the baseline the bonded terms are fit
+    against -- so what this really says is that the bonded fit absorbs the
+    different baseline, which is the claim `_nonbonded` rests on.
+    """
+    _, acks2_params, path = h2o2_fit
+    charges = np.array([-0.4, -0.4, 0.4, 0.4])
+    fixed = fit_from_file(
+        _with_mulliken(path, charges, tmp_path / "accuracy.xyz"),
+        config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
+    )
+    frames = io.read_training_set(path).frames
+
+    fixed_energy, fixed_force = _score(fixed, frames)
+    acks2_energy, acks2_force = _score(acks2_params, frames)
+    assert fixed_energy < max(2.0 * acks2_energy, 0.05)
+    assert fixed_force < max(2.0 * acks2_force, 0.5)
+
+
+def test_a_fixed_charge_starting_point_switches_the_fit_over(tmp_path, h2o2_fit):
+    """An `initial` field's electrostatics replaces the configured one.
+
+    The two terms are alternatives, so "start from this field" has to mean its
+    electrostatics too -- the alternative is a field carrying both, which
+    `Parameters.electrostatics` rejects.
+    """
+    _, params, path = h2o2_fit
+    n = len(params.numbers)
+    charges = np.array([-0.45, -0.45, 0.45, 0.45])
+    initial = Parameters(
+        numbers=params.numbers,
+        terms={
+            "coulomb": {"atoms": np.arange(n)[:, None], "kwargs": {"q": charges}},
+        },
+    )
+    # Default config, i.e. ACKS2: the starting point is what moves it over.
+    again = fit_from_file(path, initial=initial)
+
+    assert again.electrostatics() == "coulomb"
+    assert np.allclose(again.terms["coulomb"]["kwargs"]["q"], charges)

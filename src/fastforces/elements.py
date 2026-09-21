@@ -268,6 +268,26 @@ def morse_well_depth(z1: np.ndarray, z2: np.ndarray) -> np.ndarray:
     return out
 
 
-def defaults_for(numbers: np.ndarray) -> dict[str, dict[str, np.ndarray]]:
-    """Every per-atom nonbonded default, keyed by the term type that uses it."""
-    return {"atom": acks2_defaults(numbers), "lennardjones": lj_defaults(numbers)}
+def defaults_for(
+    numbers: np.ndarray, electrostatics: str = "acks2"
+) -> dict[str, dict[str, np.ndarray]]:
+    """Every per-atom nonbonded default, keyed by the term type that uses it.
+
+    `electrostatics` selects which electrostatic term is seeded.  `"acks2"`
+    gives the `atom` block above; `"fixed"` gives no electrostatic block at all,
+    because the `coulomb` term's charges are a property of the molecule rather
+    than of its elements and there is no element table that could supply them.
+    The caller reads them off the reference calculation instead -- see
+    `fit._coulomb_block`.
+    """
+    if electrostatics not in ("acks2", "fixed"):
+        raise ValueError(
+            f"electrostatics is 'acks2' or 'fixed', not {electrostatics!r}"
+        )
+    # `atom` first, so the term dict keeps the order it has always been built
+    # in and `Parameters.__repr__` reads the same as it used to.
+    defaults = {}
+    if electrostatics == "acks2":
+        defaults["atom"] = acks2_defaults(numbers)
+    defaults["lennardjones"] = lj_defaults(numbers)
+    return defaults

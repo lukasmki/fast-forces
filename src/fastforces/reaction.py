@@ -962,6 +962,16 @@ def state_parameters(reaction: Reaction, side: str, fitted: dict) -> Parameters:
     the diabatic gap, and what it leaves in the mean is absorbed by the fitted
     coupling amplitude, which is fitted against these very diagonals.
 
+    **Fixed charges are refused here, deliberately.**  That last argument is
+    what breaks: a `coulomb` block is not an element default that can be
+    rebuilt, and the fragments' Mulliken charges *are* molecular, so the two
+    sides of a reaction genuinely carry different ones.  Electrostatics would
+    then belong on each state's diagonal rather than in
+    `evb._topology_independent`, which is a change to how `EVB` and
+    `coupling.fit` are structured and not a change to this function.  Until
+    that is designed, a fragment fitted with `electrostatics='fixed'` is
+    rejected rather than silently given ACKS2's charges or one side's.
+
     `E0` is summed: it is a constant per molecule, so a system of several is
     their sum.
     """
@@ -980,10 +990,17 @@ def state_parameters(reaction: Reaction, side: str, fitted: dict) -> Parameters:
         if fragment.key not in fitted:
             raise ReactionError(f"no force field was fitted for {fragment.smiles!r}")
         built, fragment_params = fitted[fragment.key]
+        if "coulomb" in fragment_params.terms:
+            raise ReactionError(
+                f"the force field for {fragment.smiles!r} carries fixed "
+                "`coulomb` charges, which the EVB path does not support yet -- "
+                "see `state_parameters`.  Refit the fragments with "
+                "`FitConfig(electrostatics='acks2')`"
+            )
         mapping = _mapping(fragment, built)
         e0 += fragment_params.e0
         for term, block in fragment_params.terms.items():
-            if term in ("atom", "lennardjones", "reference"):
+            if term in ("atom", "coulomb", "lennardjones", "reference"):
                 continue
             entry = collected.setdefault(term, {"atoms": [], "kwargs": {}})
             entry["atoms"].append(mapping[np.asarray(block["atoms"])])

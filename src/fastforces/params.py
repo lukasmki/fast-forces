@@ -21,7 +21,13 @@ from .export import units as export_units
 # Terms the bonded evaluator does not implement, and that the calculator handles
 # itself.  `QForce.__call__` silently skips unknown keys, so these ride along in
 # the same container without disturbing it.
-NON_QFORCE_TERMS = ("atom", "lennardjones", "reference")
+NON_QFORCE_TERMS = ("atom", "coulomb", "lennardjones", "reference")
+
+# The two electrostatic terms, which are alternatives rather than additions:
+# `atom` is the ACKS2 per-atom block whose charges are re-solved at every
+# geometry, `coulomb` the fixed per-atom charges.  Both sum the same kernel over
+# the same pairs, so a field carrying both would count electrostatics twice.
+ELECTROSTATIC_TERMS = ("atom", "coulomb")
 
 
 @dataclass
@@ -54,6 +60,23 @@ class Parameters:
         """The single reference energy offset, in eV."""
         reference = self.terms.get("reference")
         return 0.0 if reference is None else float(reference["kwargs"]["E0"].sum())
+
+    def electrostatics(self) -> str | None:
+        """Which electrostatic term this field carries, or `None` for neither.
+
+        `atom` means ACKS2, `coulomb` means fixed charges.  They are mutually
+        exclusive -- see `ELECTROSTATIC_TERMS` -- and every consumer asks here
+        rather than testing for a term name itself, so the exclusion is checked
+        once instead of being assumed in four places.
+        """
+        present = [t for t in ELECTROSTATIC_TERMS if t in self.terms]
+        if len(present) > 1:
+            raise ValueError(
+                f"a force field carries one electrostatic term, not {present}: "
+                "`atom` (ACKS2) and `coulomb` (fixed charges) sum the same "
+                "kernel over the same pairs, so keeping both double counts it"
+            )
+        return present[0] if present else None
 
     def bonded_terms(self) -> dict:
         """Just the terms `QForce` evaluates, in ASE units.

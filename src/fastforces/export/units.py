@@ -5,11 +5,12 @@ The package holds its parameters in ASE units (Angstrom, eV).  Every conversion
 between the two lives in this table, so the two exporters cannot drift from
 each other.
 
-This is an *export* table and nothing else.  All four evaluators -- `QForce`,
-`ACKS2`, `LennardJones` and `ZBL` -- work in eV and Angstrom throughout and read
-`Parameters.terms` as it stands, so the conversion happens exactly twice in the
-life of a parameter: once when a jsonl is read, once when one is written.  The
-`atom` parameters are the exception in the other direction, and convert by 1.
+This is an *export* table and nothing else.  Every evaluator -- `QForce`,
+`ACKS2`, `Coulomb`, `LennardJones` and `ZBL` -- works in eV and Angstrom
+throughout and reads `Parameters.terms` as it stands, so the conversion happens
+exactly twice in the life of a parameter: once when a jsonl is read, once when
+one is written.  The `atom` parameters are the exception in the other direction,
+and convert by 1.
 
 `UNIT_POWERS[term][parameter]` is `(length_power, energy_power)`, the dimension
 of that parameter.  A bond force constant is an energy over a length squared,
@@ -23,8 +24,18 @@ LENGTH = 0.1
 ENERGY = 1.0 / (units.kJ / units.mol)
 
 # Slot names each term uses for its atom indices in the DynamicTopology format.
-SLOT_PREFIX: dict[str, str] = {"atom": "p", "lennardjones": "p", "reference": "a"}
-SLOT_START: dict[str, int] = {"atom": 0, "lennardjones": 0, "reference": 1}
+SLOT_PREFIX: dict[str, str] = {
+    "atom": "p",
+    "coulomb": "p",
+    "lennardjones": "p",
+    "reference": "a",
+}
+SLOT_START: dict[str, int] = {
+    "atom": 0,
+    "coulomb": 0,
+    "lennardjones": 0,
+    "reference": 1,
+}
 
 # `(length_power, energy_power)` per parameter.
 #
@@ -38,6 +49,11 @@ UNIT_POWERS: dict[str, dict[str, tuple[int, int]]] = {
         "soft_amp": (0, 0),
         "soft_decay": (0, 0),
     },
+    # `q` is in elementary charges, which is neither a length nor an energy, so
+    # it is not an exception to the scheme -- it simply has no powers of either.
+    # The eV*Angstrom it is multiplied by is `ewald.CCOUL`, and
+    # `export.openmm` converts that constant rather than the charges.
+    "coulomb": {"q": (0, 0)},
     "lennardjones": {"sigma": (1, 0), "eps": (0, 1)},
     # `b`, the Hulburt-Hirschfelder decay, multiplies the dimensionless
     # `s = a*(r - r0)`, so it converts by 1.  Nothing here writes it -- the fit
@@ -82,6 +98,7 @@ UNIT_POWERS: dict[str, dict[str, tuple[int, int]]] = {
 # The order terms are written in, matching the example file.
 TERM_ORDER: tuple[str, ...] = (
     "atom",
+    "coulomb",
     "lennardjones",
     "bond",
     "angle",

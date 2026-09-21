@@ -5,19 +5,25 @@ from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 from ase.stress import full_3x3_to_voigt_6_stress
 
-from .forcefield.acks2 import ACKS2
+from .forcefield import electrostatic_evaluator
 from .forcefield.lj import LennardJones
 from .forcefield.qforce import QForce
 from .forcefield.zbl import ZBL
 
 
 class FastForces(Calculator):
-    """`QForce + ACKS2 + LennardJones + ZBL`, plus the reference offset.
+    """`QForce + electrostatics + LennardJones + ZBL`, plus the reference offset.
 
     The four evaluators divide the interaction between them with no overlap:
-    `QForce` covers everything bonded, `ACKS2` the electrostatics with its
-    charges re-solved at every geometry, `ZBL` the screened nuclear repulsion at
-    short range, and `LennardJones` the repulsion and dispersion at long range.
+    `QForce` covers everything bonded, one electrostatic term the charges, `ZBL`
+    the screened nuclear repulsion at short range, and `LennardJones` the
+    repulsion and dispersion at long range.
+
+    Which electrostatic term is a property of the force field, not of the
+    calculator: an `atom` block means `ACKS2`, with its charges re-solved at
+    every geometry, and a `coulomb` block means `Coulomb`, with the charges
+    carried as fitted parameters.  `Parameters.electrostatics` picks between
+    them and rejects a field carrying both.
 
     The last two are the ones with no topology at all: neither takes exclusions,
     so both are evaluated over every pair including bonded ones.  They hand over
@@ -33,10 +39,10 @@ class FastForces(Calculator):
     second time.  It is built once here rather than per call, because a
     calculator's parameters do not change over its life.
 
-    The `atom` terms are passed through in global index order, so the term-order
-    versus global-order distinction `ACKS2` documents stays trivial here.  It is
-    still real: reorder those terms and the charges follow the terms, not the
-    atoms.
+    The per-atom terms are passed through in global index order, so the
+    term-order versus global-order distinction both electrostatic evaluators
+    document stays trivial here.  It is still real: reorder those terms and the
+    charges follow the terms, not the atoms.
     """
 
     implemented_properties = ["energy", "free_energy", "forces", "stress", "charges"]
@@ -47,9 +53,13 @@ class FastForces(Calculator):
             raise ValueError("FastForces needs a Parameters object")
         self.params = params
         self.qforce = QForce(bond_form=bond_form)
-        self.acks2 = ACKS2()
         self.lj = LennardJones()
         self.zbl = ZBL()
+        # Built once, and kept: both electrostatic evaluators cache state
+        # across calls, and a calculator's parameters do not change over its
+        # life, so the choice between them cannot either.
+        self.electrostatics = params.electrostatics()
+        self.electrostatic = electrostatic_evaluator(params)
         self._bonded = params.bonded_terms()
 
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
@@ -63,8 +73,8 @@ class FastForces(Calculator):
 
         energy, forces, virial = self.qforce(pos, pbc, cell, self._bonded)
 
-        if "atom" in terms:
-            de, df, dw = self.acks2(pos, pbc, cell, terms)
+        if self.electrostatic is not None:
+            de, df, dw = self.electrostatic(pos, pbc, cell, terms)
             energy, forces, virial = energy + de, forces + df, virial + dw
         if "lennardjones" in terms:
             de, df, dw = self.lj(pos, pbc, cell, terms)
@@ -92,9 +102,13 @@ class FastForces(Calculator):
             self.results["stress"] = full_3x3_to_voigt_6_stress(
                 0.5 * (virial + virial.T) / volume
             )
-        if "atom" in terms and self.acks2.Q is not None:
+        # Both evaluators publish their charges as `.Q`, in term order, so
+        # this reads the same either way -- solved for by `ACKS2`, carried as
+        # parameters by `Coulomb`.
+        if self.electrostatic is not None and self.electrostatic.Q is not None:
             charges = np.zeros(len(atoms))
-            charges[terms["atom"]["atoms"][:, 0]] = self.acks2.Q
+            indices = terms[self.electrostatics]["atoms"][:, 0]
+            charges[indices] = self.electrostatic.Q
             self.results["charges"] = charges
 
 

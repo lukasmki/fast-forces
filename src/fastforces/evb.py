@@ -33,26 +33,32 @@ from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 from ase.stress import full_3x3_to_voigt_6_stress
 
-from .forcefield.acks2 import ACKS2
+from .forcefield import electrostatic_evaluator
 from .forcefield.lj import LennardJones
 from .forcefield.qforce import QForce
 from .forcefield.zbl import ZBL
 
 
-def _topology_independent(pos, numbers, pbc, cell, terms, acks2, lj, zbl):
-    """ACKS2 + Lennard-Jones + ZBL: the part both states share exactly.
+def _topology_independent(pos, numbers, pbc, cell, terms, electrostatic, lj, zbl):
+    """Electrostatics + Lennard-Jones + ZBL: the part both states share exactly.
 
     Every one of the three is a function of the geometry and the elements only
     -- `LennardJones` takes no exclusions and `ZBL` never had any -- so both
     states produce the same number and it is computed once.  Note that the
-    combined system's ACKS2 energy is *not* the sum of its fragments': the
+    combined system's *ACKS2* energy is not the sum of its fragments': the
     charges equilibrate over whatever they are handed.  That is a real
     difference and it is why this is evaluated on the combined system here, the
     same way `coupling.fit` evaluates the diabats it fits the amplitude to.
+    Fixed `coulomb` charges have no such effect, but they are evaluated on the
+    combined system all the same, because the pair sum is over it either way.
+
+    `electrostatic` is whichever evaluator the states carry, or `None`; both
+    states share one, because `reaction.state_parameters` gives them the same
+    per-atom block.
     """
     energy, forces, virial = 0.0, np.zeros_like(pos), np.zeros((3, 3))
-    if "atom" in terms:
-        de, df, dw = acks2(pos, pbc, cell, terms)
+    if electrostatic is not None:
+        de, df, dw = electrostatic(pos, pbc, cell, terms)
         energy, forces, virial = energy + de, forces + df, virial + dw
     if "lennardjones" in terms:
         de, df, dw = lj(pos, pbc, cell, terms)
@@ -93,9 +99,13 @@ class EVB(Calculator):
         self.states = list(states)
         self.coupling = coupling
         self.qforce = QForce(bond_form=bond_form)
-        self.acks2 = ACKS2()
         self.lj = LennardJones()
         self.zbl = ZBL()
+        # One shared electrostatic evaluator: both states are built over the
+        # same atoms with the same per-atom block, so they cannot disagree
+        # about which term it is.
+        self.electrostatics = self.states[0].electrostatics()
+        self.electrostatic = electrostatic_evaluator(self.states[0])
         self._bonded = [p.bonded_terms() for p in self.states]
 
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
@@ -107,7 +117,14 @@ class EVB(Calculator):
         numbers = atoms.get_atomic_numbers()
 
         shared_e, shared_f, shared_w = _topology_independent(
-            pos, numbers, pbc, cell, self.states[0].terms, self.acks2, self.lj, self.zbl
+            pos,
+            numbers,
+            pbc,
+            cell,
+            self.states[0].terms,
+            self.electrostatic,
+            self.lj,
+            self.zbl,
         )
 
         diagonal = np.zeros(2)
@@ -150,9 +167,10 @@ class EVB(Calculator):
             self.results["stress"] = full_3x3_to_voigt_6_stress(
                 0.5 * (virial + virial.T) / volume
             )
-        if "atom" in self.states[0].terms and self.acks2.Q is not None:
+        if self.electrostatic is not None and self.electrostatic.Q is not None:
             charges = np.zeros(len(atoms))
-            charges[self.states[0].terms["atom"]["atoms"][:, 0]] = self.acks2.Q
+            terms = self.states[0].terms[self.electrostatics]
+            charges[terms["atoms"][:, 0]] = self.electrostatic.Q
             self.results["charges"] = charges
 
 
@@ -171,7 +189,14 @@ def diabatic_energies(atoms: Atoms, states, bond_form: str = "morse") -> tuple:
     numbers = atoms.get_atomic_numbers()
     qforce = QForce(bond_form=bond_form)
     shared, _, _ = _topology_independent(
-        pos, numbers, pbc, cell, states[0].terms, ACKS2(), LennardJones(), ZBL()
+        pos,
+        numbers,
+        pbc,
+        cell,
+        states[0].terms,
+        electrostatic_evaluator(states[0]),
+        LennardJones(),
+        ZBL(),
     )
     out = []
     for params in states:
@@ -187,7 +212,14 @@ def diabatic_forces(atoms: Atoms, states, bond_form: str = "morse"):
     numbers = atoms.get_atomic_numbers()
     qforce = QForce(bond_form=bond_form)
     shared_e, shared_f, _ = _topology_independent(
-        pos, numbers, pbc, cell, states[0].terms, ACKS2(), LennardJones(), ZBL()
+        pos,
+        numbers,
+        pbc,
+        cell,
+        states[0].terms,
+        electrostatic_evaluator(states[0]),
+        LennardJones(),
+        ZBL(),
     )
     energies, forces = [], []
     for params in states:

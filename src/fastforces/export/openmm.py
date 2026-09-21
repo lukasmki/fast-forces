@@ -24,18 +24,24 @@ calculator it was fit with is worse than useless.  Where that matters:
     transcription that dropped any of those would be a different force field at
     exactly the separations bonded pairs sit at.
 
-Electrostatics is the one place the export cannot be faithful.  ACKS2 solves for
-the charges at every geometry; OpenMM has no charge-equilibration force, so the
-charges are solved once at the geometry passed in and baked in as fixed values.
-A simulation run from the exported file therefore has fixed charges, and will
-drift from the FastForces calculator as the geometry moves away from that
-reference.
+Electrostatics is the one place the export cannot be faithful, and only for one
+of the two terms.  ACKS2 solves for the charges at every geometry; OpenMM has no
+charge-equilibration force, so an `atom` block is solved once at the geometry
+passed in and baked in as fixed values.  A simulation run from that exported
+file has fixed charges, and will drift from the FastForces calculator as the
+geometry moves away from the reference.
+
+A `coulomb` block has nothing to bake: its charges *are* fixed, so the exported
+force is the term itself and needs no geometry.  Both export to the same
+`erf(beta r)/r` expression -- which is why that is the kernel
+`forcefield/coulomb.py` uses.
 """
 
 import numpy as np
 from ase.data import atomic_masses
 
 from ..forcefield.acks2 import ACKS2
+from ..forcefield.ewald import CCOUL
 from ..forcefield.lj import CORE_FRACTION, SWITCH_RADIUS, SWITCH_WIDTH
 from ..forcefield.qforce import SHAPE_DECAY
 from ..forcefield.zbl import CCOUL as ZBL_CCOUL
@@ -58,7 +64,8 @@ HH_DECAY = SHAPE_DECAY
 # stays inside double range, which 500 does not.
 SWITCH_CLAMP = 300.0
 
-# Screening width of the ACKS2 Coulomb kernel, `erf(2 r)/r` with r in Angstrom.
+# Screening width of the smeared Coulomb kernel, `erf(2 r)/r` with r in
+# Angstrom.  `forcefield.ewald.GAMMA`, under the name the expression uses.
 ACKS2_BETA = 2.0
 
 MORSE = (
@@ -103,6 +110,10 @@ ZBL = (
     " f=1/(1+exp(zt)); zt=max(-sw_clamp,min(sw_clamp,(r-taper_r)/taper_w));"
     " x=r/a; a=screen/(z1^0.23+z2^0.23); zk=zbl_ccoul*z1*z2"
 )
+# `acks2_ccoul` and `beta` keep their ACKS2-flavoured names although both
+# electrostatic terms export to this expression now: the names are pinned by
+# `tests/acetonitrile.xml` and by every file the exporter has already written,
+# and renaming them would invalidate those for nothing but a label.
 COULOMB = "acks2_ccoul*q1*q2*erf(beta*r)/r"
 
 # Which compound-bond expression goes with how many particles.
@@ -127,9 +138,10 @@ def _converted(params, term: str, name: str) -> np.ndarray:
 def build_system(params, positions: np.ndarray | None = None, box: float = 20.0):
     """An `openmm.System` reproducing `params`.
 
-    `positions` (Angstrom) fixes the geometry the ACKS2 charges are solved at.
-    Without it the electrostatic force is omitted entirely rather than written
-    with wrong charges.
+    `positions` (Angstrom) fixes the geometry the ACKS2 charges are solved at;
+    without it the electrostatic force is omitted entirely rather than written
+    with wrong charges.  A field carrying fixed `coulomb` charges does not need
+    it.
     """
     import openmm
     from openmm import unit as omm_unit
@@ -213,13 +225,13 @@ def _nonbonded_forces(params, positions, edge):
         zbl.addParticle([float(z)])
     forces.append(zbl)
 
-    if "atom" in params.terms and positions is not None:
-        charges = acks2_charges(params, np.asarray(positions, dtype=float))
+    charges = exported_charges(params, positions)
+    if charges is not None:
         coulomb = openmm.CustomNonbondedForce(COULOMB)
         coulomb.setName("Coulomb")
         coulomb.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
         coulomb.addPerParticleParameter("q")
-        coulomb.addGlobalParameter("acks2_ccoul", ACKS2.CCOUL * u.ENERGY * u.LENGTH)
+        coulomb.addGlobalParameter("acks2_ccoul", CCOUL * u.ENERGY * u.LENGTH)
         coulomb.addGlobalParameter("beta", ACKS2_BETA / u.LENGTH)
         for q in charges:
             coulomb.addParticle([float(q)])
@@ -227,8 +239,36 @@ def _nonbonded_forces(params, positions, edge):
     return forces
 
 
+def exported_charges(params, positions: np.ndarray | None) -> np.ndarray | None:
+    """The fixed charges the exported Coulomb force carries, in global order.
+
+    `None` when there are none to write, which is either a field with no
+    electrostatics at all or an ACKS2 field exported without a geometry to
+    solve at -- the electrostatic force is then omitted entirely rather than
+    written with wrong charges.
+
+    A `coulomb` field ignores `positions`: its charges do not depend on the
+    geometry, which is the whole difference between the two terms.
+    """
+    term = params.electrostatics()
+    if term == "coulomb":
+        block = params.terms["coulomb"]
+        charges = np.zeros(len(params.numbers))
+        charges[np.asarray(block["atoms"])[:, 0]] = block["kwargs"]["q"]
+        return charges
+    if term == "atom" and positions is not None:
+        return acks2_charges(params, np.asarray(positions, dtype=float))
+    return None
+
+
 def acks2_charges(params, positions: np.ndarray) -> np.ndarray:
-    """ACKS2 charges at `positions` (Angstrom), in global atom order."""
+    """ACKS2 charges at `positions` (Angstrom), in global atom order.
+
+    Solved with no kernel, so under open boundaries -- see
+    `ACKS2.get_kernel`.  The exported system is periodic in a 20 A box by
+    default, so this is already an approximation on top of freezing the
+    charges; both are the same trade `build_system` documents.
+    """
     block = params.terms["atom"]
     indices = np.asarray(block["atoms"])[:, 0]
     vecs = positions[:, None, :] - positions[None, :, :]

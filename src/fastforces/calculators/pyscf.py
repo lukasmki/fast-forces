@@ -74,6 +74,43 @@ def bo(mf: scf.hf.SCF, ov=None, dm=None):
     return B
 
 
+def mulliken(mf: scf.hf.SCF, ov=None, dm=None):
+    """Mulliken partial charges, one per atom, in elementary charges.
+
+    `q_A = Z_A - sum_{mu in A} (D S)_{mu mu}`: the atomic number less the
+    electron population Mulliken assigns to the basis functions centred on that
+    atom.  Built the same way as `bo` above and from the same two matrices, so
+    the two share the AO-to-atom map and the alpha/beta handling rather than
+    each deriving them.
+
+    Mulliken is the crudest population analysis there is -- it splits the
+    overlap population straight down the middle and is notoriously
+    basis-dependent, which with `cc-pvtz` is not a small caveat.  It is here
+    because it costs one diagonal of a matrix product that `bo` already forms,
+    and because the `coulomb` term needs *some* per-atom charge to start from.
+    See `forcefield/coulomb.py`.
+
+    The charges sum to the total molecular charge by construction, which is the
+    condition `forcefield/ewald.py` needs for its periodic sum to be legitimate.
+    """
+    mol: gto.Mole = mf.mol
+    ao_idx = np.asarray([x[0] for x in mol.ao_labels(fmt=False)])
+
+    if dm is None:
+        dm = mf.make_rdm1()
+    dm = np.asarray(dm)
+    total = dm if dm.ndim == 2 else dm[0] + dm[1]
+
+    if ov is None:
+        ov = mf.get_ovlp()
+
+    # Only the diagonal of `D S` is needed, so it is never formed.
+    population = np.einsum("ij,ji->i", total, np.asarray(ov))
+    charges = np.asarray(mol.atom_charges(), dtype=float)
+    np.subtract.at(charges, ao_idx, population)
+    return charges
+
+
 class PySCFCalculator(Calculator):
     """Density-fitted PySCF UKS calculator with two evaluation modes.
 
@@ -90,13 +127,18 @@ class PySCFCalculator(Calculator):
         called the calculator falls back to the Born-Oppenheimer path, so a CP
         run can bootstrap itself.
 
+    Both paths write the bond orders and the Mulliken charges onto the caller's
+    `Atoms` -- as the `bond-order` and `mulliken` arrays -- alongside the energy
+    and forces they return, because both are by-products of the density matrix
+    that is already in hand.
+
     The nuclear gradient on the CP path uses the Car-Parrinello energy-weighted
     density matrix ``W = C L C^T`` with ``L = C^T F C``, where ``C`` is recovered
     from ``D`` by diagonalizing it in the Löwdin basis.  It reduces to the
     ordinary SCF gradient when ``D`` is converged (``L`` diagonal).
     """
 
-    implemented_properties = ["energy", "forces"]
+    implemented_properties = ["energy", "forces", "charges"]
 
     def __init__(
         self,
@@ -225,6 +267,12 @@ class PySCFCalculator(Calculator):
         bond_order = bo(self.mf, dm=dm)
         atoms.set_array("bond-order", bond_order, bond_order.dtype)
 
+        # Mulliken charges, written onto the frame as well as returned: that is
+        # what carries them through `sampling.snapshot`, which keeps whatever
+        # arrays the calculator wrote, into the training file and on to the fit.
+        charges = mulliken(self.mf, dm=dm)
+        atoms.set_array("mulliken", charges, float)
+
         conn = []
         for i in range(len(atoms)):
             for j in range(i + 1, len(atoms)):
@@ -235,6 +283,7 @@ class PySCFCalculator(Calculator):
         self.results = {
             "energy": energy * units.Hartree,
             "forces": forces * units.Hartree / units.Bohr,
+            "charges": charges,
         }
 
     def _calculate_bo(self, atoms: Atoms):

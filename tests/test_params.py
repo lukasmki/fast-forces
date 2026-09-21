@@ -208,3 +208,138 @@ def test_calculator_gradient_on_the_example():
                 energies.append(probe.get_potential_energy())
             numeric[i, axis] = -(energies[0] - energies[1]) / (2 * step)
     assert np.allclose(forces, numeric, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# fixed point charges
+# ---------------------------------------------------------------------------
+
+# Acetonitrile Mulliken-ish charges, summing to zero: enough to exercise the
+# plumbing without pretending to be a reference calculation.
+EXAMPLE_CHARGES = np.array([-0.35, 0.20, -0.30, 0.15, 0.15, 0.15])
+
+
+def fixed_charge_params():
+    """The example field with its `atom` block swapped for a `coulomb` one."""
+    atoms, params = example_params()
+    del params.terms["atom"]
+    params.terms["coulomb"] = {
+        "atoms": np.arange(len(EXAMPLE_CHARGES))[:, None],
+        "kwargs": {"q": EXAMPLE_CHARGES.copy()},
+    }
+    return atoms, params
+
+
+def test_electrostatics_names_the_term_in_use():
+    _, acks2 = example_params()
+    assert acks2.electrostatics() == "atom"
+    _, fixed = fixed_charge_params()
+    assert fixed.electrostatics() == "coulomb"
+    assert Parameters(numbers=np.array([1])).electrostatics() is None
+
+
+def test_electrostatics_rejects_a_field_carrying_both():
+    """Both sum the same kernel over the same pairs, so both is double counting."""
+    _, params = fixed_charge_params()
+    params.terms["atom"] = {"atoms": np.zeros((1, 1), int), "kwargs": {}}
+    with pytest.raises(ValueError, match="one electrostatic term"):
+        params.electrostatics()
+
+
+def test_coulomb_charges_round_trip_unconverted(tmp_path):
+    """`q` is in elementary charges, so both formats carry the same number."""
+    _, params = fixed_charge_params()
+    path = tmp_path / "fixed.jsonl"
+    params.to_jsonl(str(path))
+
+    rows = [json.loads(line) for line in open(path) if line.strip()]
+    written = [r for r in rows if r["type"] == "coulomb"]
+    assert len(written) == len(EXAMPLE_CHARGES)
+    assert [r["kwargs"]["q"] for r in written] == pytest.approx(EXAMPLE_CHARGES)
+    # and `p0`, the slot name the per-atom terms use
+    assert [r["atoms"]["p0"] for r in written] == list(range(len(EXAMPLE_CHARGES)))
+
+    reloaded = Parameters.from_jsonl(str(path), numbers=params.numbers)
+    assert reloaded.electrostatics() == "coulomb"
+    assert np.allclose(reloaded.terms["coulomb"]["kwargs"]["q"], EXAMPLE_CHARGES)
+
+
+def test_calculator_gradient_with_fixed_charges():
+    """The assembled calculator, end to end, on the other electrostatic term."""
+    from fastforces.calculator import FastForces
+
+    atoms, params = fixed_charge_params()
+    atoms.calc = FastForces(atoms, params)
+    forces = atoms.get_forces()
+
+    step = 1e-5
+    numeric = np.zeros_like(forces)
+    for i in range(len(atoms)):
+        for axis in range(3):
+            energies = []
+            for sign in (+1, -1):
+                probe = atoms.copy()
+                probe.calc = FastForces(probe, params)
+                probe.positions[i, axis] += sign * step
+                energies.append(probe.get_potential_energy())
+            numeric[i, axis] = -(energies[0] - energies[1]) / (2 * step)
+    assert np.allclose(forces, numeric, atol=1e-5)
+
+
+def test_calculator_reports_the_fixed_charges():
+    from fastforces.calculator import FastForces
+
+    atoms, params = fixed_charge_params()
+    atoms.calc = FastForces(atoms, params)
+    atoms.get_potential_energy()
+    assert np.allclose(atoms.calc.results["charges"], EXAMPLE_CHARGES)
+
+
+def test_openmm_export_needs_no_geometry_for_fixed_charges():
+    """Nothing to freeze, so the electrostatic force is written either way.
+
+    An ACKS2 field exported without `positions` loses its electrostatics -- the
+    charges can only be solved at a geometry.  A `coulomb` field does not, and
+    the exported charges are the parameters themselves.
+    """
+    pytest.importorskip("openmm")
+    from fastforces.export.openmm import exported_charges
+
+    _, fixed = fixed_charge_params()
+    assert np.allclose(exported_charges(fixed, None), EXAMPLE_CHARGES)
+
+    atoms, acks2 = example_params()
+    assert exported_charges(acks2, None) is None
+    solved = exported_charges(acks2, atoms.get_positions())
+    assert solved is not None and np.abs(solved).sum() > 0.0
+
+    system = fixed.to_openmm_system()
+    names = [system.getForce(i).getName() for i in range(system.getNumForces())]
+    assert "Coulomb" in names
+
+
+def test_openmm_matches_the_calculator_with_fixed_charges():
+    """The exported system and the calculator agree away from equilibrium too.
+
+    The ACKS2 export is only ever approximate -- it freezes charges the
+    calculator keeps re-solving -- so `test_openmm_export_matches_the_calculator`
+    can only check it at the geometry the charges were solved at.  Fixed charges
+    have no such gap, so this holds at a displaced geometry as well, which is
+    what says the exported force really is the term rather than a snapshot of
+    it.
+    """
+    pytest.importorskip("openmm")
+    from fastforces.calculator import evaluate
+    from fastforces.export.openmm import system_energy
+
+    atoms, params = fixed_charge_params()
+    rng = np.random.default_rng(3)
+    for displacement in (0.0, 0.1):
+        probe = atoms.copy()
+        probe.positions += displacement * rng.normal(size=probe.positions.shape)
+        positions = probe.get_positions()
+        # No `positions` passed to the export: fixed charges do not need one.
+        system = params.to_openmm_system()
+        assert system_energy(system, positions) == pytest.approx(
+            evaluate(probe, params)[0], rel=1e-9
+        )

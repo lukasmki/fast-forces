@@ -10,4 +10,4 @@ wheels/
 .venv
 
 # Example outputs
-examples/output/
+quickstart/output/
