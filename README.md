@@ -9,6 +9,7 @@ Fast automatic parameterization of force fields
 - Export parameters in OpenMM or DynamicTopology format
 - Use the included FastForces calculator to immediately start running simulations
 - All training data is saved into one extended XYZ file: Everything necessary to reproduce the fit is contained in one file
+- Two electrostatics models: ACKS2 charge equilibration, whose charges are re-solved at every geometry, or fixed point charges taken from the reference calculation's Mulliken populations (`FitConfig(electrostatics="fixed")`)
 - Start a fit from an existing force field with `initial=`, rather than from the element table
 - Parameterize a *reaction* from an atom-mapped reaction SMILES: a force field per fragment, a Sella transition state, and a fitted EVB off-diagonal coupling
 
@@ -76,9 +77,9 @@ has to be constrained.
 
 ## Examples
 
-Numbered, runnable examples live in [`examples/`](examples/) -- start with
-`examples/01_quickstart.py` and read `examples/README.md` for the index.
-`examples/10_reaction.py` walks through the reaction pipeline end to end.
+Numbered, runnable examples live in [`quickstart/`](quickstart/) -- start with
+`quickstart/01_quickstart.py` and read `quickstart/README.md` for the index.
+`quickstart/10_reaction.py` walks through the reaction pipeline end to end.
 
 ## Workflow Overview
 
@@ -103,7 +104,7 @@ field does not cover keeps its ordinary default. The bond parameters start a
 local nonlinear solve, and the equilibrium values and nonbonded baseline are
 held fixed rather than fit, so supplying any of those changes the result; the
 remaining force constants come from a global least squares that has no starting
-point. `examples/09_starting_point.py` works through the distinction.
+point. `quickstart/09_starting_point.py` works through the distinction.
 
 ### Is fitting idempotent?
 
@@ -145,4 +146,4 @@ and stops meaning a dissociation energy. The fit is still good -- that is the
 better-fitting row above -- but a bond whose `D` is pinned at 200 will not
 describe dissociation if you pull it apart in MD.
 
-`examples/09_starting_point.py` measures all of it.
+`quickstart/09_starting_point.py` measures all of it.

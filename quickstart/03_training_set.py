@@ -6,7 +6,7 @@ that file and re-runs the regression without calling the reference method
 again.  The Hessian is not stored separately -- it is reconstructed from the
 displaced frames that were used to compute it in the first place.
 
-    uv run python examples/03_training_set.py
+    uv run python quickstart/03_training_set.py
 """
 
 import numpy as np

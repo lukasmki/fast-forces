@@ -5,7 +5,7 @@ with perceived connectivity, `parameterize` generates its own reference data
 and fits every term against it, and `FastForces` evaluates the result as an
 ordinary ASE calculator.
 
-    uv run python examples/01_quickstart.py
+    uv run python quickstart/01_quickstart.py
 """
 
 import fastforces as ff

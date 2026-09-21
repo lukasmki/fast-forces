@@ -9,7 +9,7 @@ barrier instead of stopping at it.
 Three parts: the identity SN2 end to end, what happens to a channel with no
 gas-phase saddle, and a scan across the finished surface.
 
-    uv run python examples/10_reaction.py
+    uv run python quickstart/10_reaction.py
 """
 
 import numpy as np

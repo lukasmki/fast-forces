@@ -1,4 +1,4 @@
-# Examples
+# Quickstart Examples
 
 The regression fixtures for the two export formats live in `tests/`, not here:
 `tests/acetonitrile.jsonl` (one JSON row per term) and `tests/acetonitrile.xml`
@@ -8,7 +8,7 @@ The regression fixtures for the two export formats live in `tests/`, not here:
 **Numbered scripts** — each one standalone and runnable:
 
 ```bash
-uv run python examples/01_quickstart.py
+uv run python quickstart/01_quickstart.py
 ```
 
 | script | shows | runtime |
@@ -29,11 +29,11 @@ surprising in the earlier ones — but each runs on its own. `10_reaction.py` is
 the one that leaves a single molecule behind: everything before it fits one
 topology, and it fits two and the coupling between them.
 
-Everything the scripts write goes to `examples/output/`. Scripts 04, 06, 07, 08 and 09 reuse the training files cached there, re-fitting from them rather than
+Everything the scripts write goes to `quickstart/output/`. Scripts 04, 06, 07, 08 and 09 reuse the training files cached there, re-fitting from them rather than
 calling the reference calculator again. That saves little here — GFN2-xTB is
 cheap enough that the regression, not the reference method, is most of the
 runtime — but it is what makes the pattern worth having when the reference is a
-DFT code. Delete `examples/output/` to start over; the whole set takes about
+DFT code. Delete `quickstart/output/` to start over; the whole set takes about
 three minutes from cold.
 
 `04_export_formats.py` needs the optional OpenMM dependency:

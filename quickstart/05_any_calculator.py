@@ -9,7 +9,7 @@ physics does.
 `calc_factory` is a callable, not a calculator, because some calculators bind
 to a specific `Atoms` at construction and the fit builds many geometries.
 
-    uv run python examples/05_any_calculator.py
+    uv run python quickstart/05_any_calculator.py
 """
 
 import numpy as np

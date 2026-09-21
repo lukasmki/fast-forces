@@ -16,7 +16,7 @@ from fastforces import reaction as R
 from fastforces.params import Parameters
 
 # The reference channel: a Grotthuss proton transfer in the water dimer.  The
-# index order this parses into is the one `examples/output/h3o-h2o-transfer.xyz`
+# index order this parses into is the one `quickstart/output/h3o-h2o-transfer.xyz`
 # stores, which is what makes the two comparable.
 WATER = (
     "[O+:1]([H:2])([H:3])[H:4].[O:5]([H:6])[H:7]"

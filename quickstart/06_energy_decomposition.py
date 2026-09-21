@@ -14,7 +14,7 @@ outside 2.2 A.
 That subtraction has a consequence worth understanding, which is the second
 half of this example.
 
-    uv run python examples/06_energy_decomposition.py
+    uv run python quickstart/06_energy_decomposition.py
 """
 
 import numpy as np
@@ -53,12 +53,14 @@ print(f"{'total':18s} {total:13.4f}")
 print(f"{'FastForces':18s} {ff.evaluate(atoms, params)[0]:13.4f}  (agrees)\n")
 
 lj_energy = pieces["Lennard-Jones"][0]
-print(f"""Lennard-Jones is {lj_energy:+.4f} eV rather than zero.  It used to be exactly zero
+print(
+    f"""Lennard-Jones is {lj_energy:+.4f} eV rather than zero.  It used to be exactly zero
 here -- in a six-atom molecule every pair is inside the 1-2/1-3/1-4 exclusions,
 so there was nothing left for it to act on -- but the term no longer excludes
 anything, and `lj.switch` is what makes that affordable: at a bond length the
 12-6 is switched down by three to four orders of magnitude, from hundreds of eV
-to hundredths.\n""")
+to hundredths.\n"""
+)
 
 # ACKS2 solves its charges at every geometry rather than carrying fixed ones.
 atoms.calc = ff.FastForces(atoms, params)

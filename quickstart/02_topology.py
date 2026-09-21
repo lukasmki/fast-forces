@@ -5,7 +5,7 @@ decides *which* terms exist and *which of them share parameters*.  Atoms in the
 same symmetry class share a type, so both O-H bonds of hydrogen peroxide and
 all three methyl hydrogens of acetonitrile are fit as one parameter each.
 
-    uv run python examples/02_topology.py
+    uv run python quickstart/02_topology.py
 """
 
 import fastforces as ff

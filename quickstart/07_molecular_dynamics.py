@@ -4,7 +4,7 @@
 unchanged.  This runs NVE to check energy conservation, then Langevin at 300 K,
 and times both against the reference method the field was fit to.
 
-    uv run python examples/07_molecular_dynamics.py
+    uv run python quickstart/07_molecular_dynamics.py
 """
 
 import time

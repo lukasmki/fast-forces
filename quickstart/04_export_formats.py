@@ -6,7 +6,7 @@ backs both writers so they cannot drift apart.  The jsonl round-trips exactly;
 the OpenMM system is checked by evaluating it with OpenMM's own engine and
 comparing against `FastForces`.
 
-    uv run python examples/04_export_formats.py
+    uv run python quickstart/04_export_formats.py
 """
 
 import json

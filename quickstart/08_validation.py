@@ -6,7 +6,7 @@ torsion scans at 30 degree steps; the validation scan is relaxed at 10 degree
 steps, and every angle that coincides with a training angle is dropped, so what
 is left is genuinely held out.
 
-    uv run python examples/08_validation.py
+    uv run python quickstart/08_validation.py
 """
 
 import numpy as np

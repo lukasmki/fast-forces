@@ -16,8 +16,8 @@ from ase.io import read
 
 from fastforces import coupling as C
 
-REFERENCE_XYZ = "examples/output/h3o-h2o-transfer.xyz"
-REFERENCE_JSONL = "examples/output/h3o-h2o-transfer.jsonl"
+REFERENCE_XYZ = "quickstart/output/h3o-h2o-transfer.xyz"
+REFERENCE_JSONL = "quickstart/output/h3o-h2o-transfer.jsonl"
 
 # Donor, transferring proton, acceptor, in the reference file's atom order.
 TRIPLE = (0, 1, 4)

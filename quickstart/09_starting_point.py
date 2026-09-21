@@ -22,7 +22,7 @@ idempotent?  Hand a fit its own output back and see whether it returns it
 unchanged.  It does -- and the one design decision that makes it true is worth
 seeing, because it was not always.
 
-    uv run python examples/09_starting_point.py
+    uv run python quickstart/09_starting_point.py
 """
 
 import numpy as np
@@ -88,8 +88,7 @@ for i in range(4):
     )
     current = ff.fit_from_file(str(path), config=ff.FitConfig(), initial=current)
 
-print(
-    """
+print("""
 Every restart after the first stops at two cycles, and what it predicts does not
 move: the force RMSE repeats to five figures.  The parameters repeat to within
 `cycle_tol`, which is a few percent on the shallowest cross terms and a fraction
@@ -126,5 +125,4 @@ the energy only through the anharmonicity it describes, and `D -> infinity` is
 the harmonic limit -- so where the reference data does not pin the anharmonicity
 down, `D` saturates and stops meaning a dissociation energy.  The fit is better
 for it, but a bond in that state will not describe dissociation if you pull it
-apart in MD.  Worth checking before you do."""
-)
+apart in MD.  Worth checking before you do.""")

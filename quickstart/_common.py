@@ -1,6 +1,6 @@
 """Shared helpers for the numbered examples -- not part of the package API.
 
-Running any example as `python examples/0N_name.py` puts this directory on
+Running any example as `python quickstart/0N_name.py` puts this directory on
 `sys.path`, which is how the plain `from _common import ...` below resolves.
 """
 
