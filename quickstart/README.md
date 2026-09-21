@@ -23,18 +23,24 @@ uv run python quickstart/01_quickstart.py
 | `08_validation.py` | scoring the fit on geometries it never saw | 35 s |
 | `09_starting_point.py` | fitting from an existing force field, and why refitting is idempotent | 20 s |
 | `10_reaction.py` | a reaction SMILES to an EVB surface: two states, a Sella saddle, one coupling | 60 s |
+| `11_fixed_charges.py` | fixed point charges instead of ACKS2, and what each one is for | 35 s |
 
 They are meant to be read in order — 02 and 06 explain results that look
 surprising in the earlier ones — but each runs on its own. `10_reaction.py` is
-the one that leaves a single molecule behind: everything before it fits one
-topology, and it fits two and the coupling between them.
+the one that leaves a single molecule behind: everything else fits one
+topology, and it fits two and the coupling between them. `11_fixed_charges.py`
+is the one that changes what a force field *is* rather than how it is built:
+the same molecule, fit twice against the same reference data, with the
+electrostatics swapped underneath it.
 
 Everything the scripts write goes to `quickstart/output/`. Scripts 04, 06, 07, 08 and 09 reuse the training files cached there, re-fitting from them rather than
 calling the reference calculator again. That saves little here — GFN2-xTB is
 cheap enough that the regression, not the reference method, is most of the
 runtime — but it is what makes the pattern worth having when the reference is a
-DFT code. Delete `quickstart/output/` to start over; the whole set takes about
-three minutes from cold.
+DFT code. `11_fixed_charges.py` writes its own set instead of reusing one: a
+fixed-charge fit needs per-atom reference charges in the training file, and the
+sets the earlier scripts cached carry none. Delete `quickstart/output/` to
+start over; the whole set takes about four minutes from cold.
 
 `04_export_formats.py` needs the optional OpenMM dependency:
 

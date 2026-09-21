@@ -79,7 +79,9 @@ has to be constrained.
 
 Numbered, runnable examples live in [`quickstart/`](quickstart/) -- start with
 `quickstart/01_quickstart.py` and read `quickstart/README.md` for the index.
-`quickstart/10_reaction.py` walks through the reaction pipeline end to end.
+`quickstart/10_reaction.py` walks through the reaction pipeline end to end, and
+`quickstart/11_fixed_charges.py` fits one molecule with each electrostatics
+model against the same reference data and compares them.
 
 ## Workflow Overview
 
