@@ -10,6 +10,7 @@ Fast automatic parameterization of force fields
 - Use the included FastForces calculator to immediately start running simulations
 - All training data is saved into one extended XYZ file: Everything necessary to reproduce the fit is contained in one file
 - Start a fit from an existing force field with `initial=`, rather than from the element table
+- Parameterize a *reaction* from an atom-mapped reaction SMILES: a force field per fragment, a Sella transition state, and a fitted EVB off-diagonal coupling
 
 ## Example Usage
 
@@ -24,10 +25,60 @@ atoms.calc = FastForces(atoms, params)
 # do stuff!
 ```
 
+## Reactions
+
+`parameterize_reaction` takes an atom-mapped reaction SMILES and returns a
+two-state EVB surface: a force field for each molecule involved, a transition
+state located with [Sella](https://github.com/zadorlab/sella), and the
+off-diagonal coupling that joins the two diabatic states.
+
+```python
+rxn = ff.parameterize_reaction(
+    "[Cl-:1].[C:2]([H:3])([H:4])([H:5])[Cl:6]"
+    ">>[Cl:1][C:2]([H:3])([H:4])([H:5]).[Cl-:6]",
+    calc_factory=lambda atm: TBLite(atm),
+)
+atoms.calc = rxn.calculator(atoms)   # an ASE calculator that goes over the barrier
+```
+
+Every hydrogen must be written out and mapped: an implicit hydrogen is an atom
+with no index, and in a transfer the atom that moves is usually one of them.
+
+Three stages, and each is usable on its own:
+
+1. **Fragments.** Every distinct molecule on either side gets its own
+   `parameterize` against the same reference calculator -- the same relaxation,
+   Hessian, thermal frames, conformers and torsion scans a standalone molecule
+   would get. This is the expensive stage, and it is cached per molecule, so a
+   species appearing on both sides is fitted once.
+2. **Stationary points.** The saddle guess is built from the changing bonds --
+   each fragment embedded on its own, the breaking bond opened out to the
+   contact distance, the leaving group docked along it -- then refined with
+   Sella at `order=1`. The two endpoints are relaxed *down* from the saddle
+   along its imaginary mode, so all three frames are on one reaction path in one
+   atom order.
+3. **Coupling.** The connectivity change picks the form: `threebody` for an atom
+   transfer, `twobody` for a barrierless fission, `rmsd` for anything else. The
+   amplitude comes from inverting the 2x2 secular equation at the saddle against
+   the reference barrier, so the barrier is reproduced by construction; the
+   width comes from requiring the coupling to have quenched to `eps` at the
+   nearer endpoint, where the diabatic picture is already correct.
+
+The endpoints are *not* fitted, and are the honest test of the surface: the
+coupling has switched off there, so what is left is the two diabatic force
+fields and the unfitted nonbonded baseline between them.
+
+A channel whose diabats never separate has no saddle to find --
+`[H3O]+ + H2O` is a single well in the gas phase -- and `stationary_points`
+raises rather than fitting a coupling to a path that does not exist. Supply the
+three frames yourself and call `coupling.fit_threebody` directly when the path
+has to be constrained.
+
 ## Examples
 
 Numbered, runnable examples live in [`examples/`](examples/) -- start with
 `examples/01_quickstart.py` and read `examples/README.md` for the index.
+`examples/10_reaction.py` walks through the reaction pipeline end to end.
 
 ## Workflow Overview
 

@@ -63,6 +63,21 @@ UNIT_POWERS: dict[str, dict[str, tuple[int, int]]] = {
     },
     "periodicdihedral": {"k": (0, 1), "n": (0, 0), "phi0": (0, 0)},
     "reference": {"E0": (0, 1)},
+    # The EVB couplings join the ACKS2 `atom` block as the exception to the
+    # scheme: the reference files store them in eV and Angstrom, unconverted
+    # (`A` in eV, `ra0` in Angstrom, `a` in inverse Angstrom squared), so the
+    # format carries them in the calculator's own units and every power is zero.
+    # Writing the real dimensions here instead would be more principled and
+    # would silently rescale every coupling ever written.
+    "rmsd": {"A": (0, 0), "a": (0, 0)},
+    "twobody": {"A": (0, 0), "a": (0, 0), "r0": (0, 0)},
+    "threebody": {
+        "A": (0, 0),
+        "a": (0, 0),
+        "ra0": (0, 0),
+        "rb0": (0, 0),
+        "t0": (0, 0),
+    },
 }
 
 # The order terms are written in, matching the example file.
@@ -79,6 +94,12 @@ TERM_ORDER: tuple[str, ...] = (
     "dihedralangleangle",
     "periodicdihedral",
     "reference",
+    # The couplings are not part of a single-state force field -- they belong to
+    # a reaction, and `coupling.Coupling` writes them to their own file -- but
+    # they are listed so a term dict carrying one still round trips.
+    "rmsd",
+    "twobody",
+    "threebody",
 )
 
 

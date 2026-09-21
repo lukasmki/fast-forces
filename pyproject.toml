@@ -16,6 +16,7 @@ dependencies = [
     "pyscf>=2.14.0",
     "rdkit>=2024.3.1",
     "scipy>=1.14",
+    "sella>=2.6.0",
     "tblite>=0.7.0",
 ]
 

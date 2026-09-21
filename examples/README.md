@@ -22,9 +22,12 @@ uv run python examples/01_quickstart.py
 | `07_molecular_dynamics.py` | NVE and Langevin dynamics, and the speedup over the reference | 45 s |
 | `08_validation.py` | scoring the fit on geometries it never saw | 35 s |
 | `09_starting_point.py` | fitting from an existing force field, and why refitting is idempotent | 20 s |
+| `10_reaction.py` | a reaction SMILES to an EVB surface: two states, a Sella saddle, one coupling | 60 s |
 
 They are meant to be read in order — 02 and 06 explain results that look
-surprising in the earlier ones — but each runs on its own.
+surprising in the earlier ones — but each runs on its own. `10_reaction.py` is
+the one that leaves a single molecule behind: everything before it fits one
+topology, and it fits two and the coupling between them.
 
 Everything the scripts write goes to `examples/output/`. Scripts 04, 06, 07, 08 and 09 reuse the training files cached there, re-fitting from them rather than
 calling the reference calculator again. That saves little here — GFN2-xTB is

@@ -6,6 +6,17 @@ from tblite.ase import TBLite
 atoms = ff.build("CC#N")
 params = ff.parameterize(atoms, calc_factory=lambda atm: TBLite(atm))
 atoms.calc = ff.FastForces(atoms, params)
+
+A reaction is the same call one level up: `parameterize_reaction` fits a force
+field per fragment, finds the saddle with Sella and fits the EVB off-diagonal
+coupling that joins the two diabatic states.
+
+rxn = ff.parameterize_reaction(
+    "[O+:1]([H:2])([H:3])[H:4].[O:5]([H:6])[H:7]"
+    ">>[O:1]([H:3])[H:4].[O+:5]([H:2])([H:6])[H:7]",
+    calc_factory=lambda atm: TBLite(atm),
+)
+atoms.calc = rxn.calculator(atoms)
 """
 
 import numpy as np
@@ -16,20 +27,34 @@ from .calculator import FastForces, evaluate
 from .fit import FitConfig, as_parameters, fit
 from .params import Parameters
 from .topology import enumerate_terms, perceive
+from . import coupling, evb, reaction  # noqa: E402  (needs `sampling` bound first)
+from .coupling import Coupling
+from .evb import EVB
+from .reaction import Reaction, ReactionParameters
+from .reaction import parameterize as parameterize_reaction
 
 __all__ = [
+    "Coupling",
+    "EVB",
     "FastForces",
     "FitConfig",
     "Parameters",
+    "Reaction",
+    "ReactionParameters",
     "as_parameters",
     "build",
+    "coupling",
     "elements",
     "enumerate_terms",
     "evaluate",
+    "evb",
     "fit",
+    "fit_from_file",
     "io",
     "parameterize",
+    "parameterize_reaction",
     "perceive",
+    "reaction",
     "sampling",
     "topology",
 ]
