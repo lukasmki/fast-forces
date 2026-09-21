@@ -84,10 +84,6 @@ MULLIKEN_ETA: dict[int, float] = {
 SOFT_AMP_SLOPE, SOFT_AMP_INTERCEPT = 5.10123, 0.51544
 SOFT_DECAY_SLOPE, SOFT_DECAY_INTERCEPT = 0.47686, 0.12104
 
-# `soft_scale` rides along in the DynamicTopology format but is not consumed by
-# `ACKS2`; the two example values agree to within 2%, so one constant covers it.
-SOFT_SCALE_DEFAULT = 0.18
-
 # Values that came out of a real fit, and so override the generic tables above.
 ACKS2_OVERRIDES: dict[int, dict[str, float]] = {
     1: {
@@ -95,18 +91,16 @@ ACKS2_OVERRIDES: dict[int, dict[str, float]] = {
         "eta": 7.284643173217773,
         "soft_amp": 2.0968151092529297,
         "soft_decay": 0.26886698603630066,
-        "soft_scale": 0.18287299573421478,
     },
     8: {
         "mu": 8.120335578918457,
         "eta": 3.7445240020751953,
         "soft_amp": 3.882110118865967,
         "soft_decay": 0.4358389973640442,
-        "soft_scale": 0.17855200171470642,
     },
 }
 
-ACKS2_FIELDS = ("mu", "eta", "soft_amp", "soft_decay", "soft_scale")
+ACKS2_FIELDS = ("mu", "eta", "soft_amp", "soft_decay")
 
 # ---------------------------------------------------------------------------
 # Lennard-Jones
@@ -236,7 +230,6 @@ def acks2_defaults(numbers: np.ndarray) -> dict[str, np.ndarray]:
         "eta": eta,
         "soft_amp": SOFT_AMP_SLOPE * r + SOFT_AMP_INTERCEPT,
         "soft_decay": SOFT_DECAY_SLOPE * r + SOFT_DECAY_INTERCEPT,
-        "soft_scale": np.full(len(numbers), SOFT_SCALE_DEFAULT),
     }
     for i, z in enumerate(numbers):
         for field, value in ACKS2_OVERRIDES.get(int(z), {}).items():

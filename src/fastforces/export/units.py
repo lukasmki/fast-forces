@@ -37,7 +37,6 @@ UNIT_POWERS: dict[str, dict[str, tuple[int, int]]] = {
         "eta": (0, 0),
         "soft_amp": (0, 0),
         "soft_decay": (0, 0),
-        "soft_scale": (0, 0),
     },
     "lennardjones": {"sigma": (1, 0), "eps": (0, 1)},
     # `b`, the Hulburt-Hirschfelder decay, multiplies the dimensionless

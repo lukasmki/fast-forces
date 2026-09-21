@@ -1,9 +1,9 @@
-{"type": "atom", "atoms": {"p0": 0}, "kwargs": {"mu": 6.26, "eta": 5.0, "soft_amp": 4.392374800000001, "soft_decay": 0.4834536, "soft_scale": 0.18}}
-{"type": "atom", "atoms": {"p0": 1}, "kwargs": {"mu": 6.26, "eta": 5.0, "soft_amp": 4.392374800000001, "soft_decay": 0.4834536, "soft_scale": 0.18}}
-{"type": "atom", "atoms": {"p0": 2}, "kwargs": {"mu": 7.23, "eta": 7.3, "soft_amp": 4.1373133, "soft_decay": 0.4596106, "soft_scale": 0.18}}
-{"type": "atom", "atoms": {"p0": 3}, "kwargs": {"mu": 1.879652976989746, "eta": 7.284643173217773, "soft_amp": 2.0968151092529297, "soft_decay": 0.26886698603630066, "soft_scale": 0.18287299573421478}}
-{"type": "atom", "atoms": {"p0": 4}, "kwargs": {"mu": 1.879652976989746, "eta": 7.284643173217773, "soft_amp": 2.0968151092529297, "soft_decay": 0.26886698603630066, "soft_scale": 0.18287299573421478}}
-{"type": "atom", "atoms": {"p0": 5}, "kwargs": {"mu": 1.879652976989746, "eta": 7.284643173217773, "soft_amp": 2.0968151092529297, "soft_decay": 0.26886698603630066, "soft_scale": 0.18287299573421478}}
+{"type": "atom", "atoms": {"p0": 0}, "kwargs": {"mu": 6.26, "eta": 5.0, "soft_amp": 4.392374800000001, "soft_decay": 0.4834536}}
+{"type": "atom", "atoms": {"p0": 1}, "kwargs": {"mu": 6.26, "eta": 5.0, "soft_amp": 4.392374800000001, "soft_decay": 0.4834536}}
+{"type": "atom", "atoms": {"p0": 2}, "kwargs": {"mu": 7.23, "eta": 7.3, "soft_amp": 4.1373133, "soft_decay": 0.4596106}}
+{"type": "atom", "atoms": {"p0": 3}, "kwargs": {"mu": 1.879652976989746, "eta": 7.284643173217773, "soft_amp": 2.0968151092529297, "soft_decay": 0.26886698603630066}}
+{"type": "atom", "atoms": {"p0": 4}, "kwargs": {"mu": 1.879652976989746, "eta": 7.284643173217773, "soft_amp": 2.0968151092529297, "soft_decay": 0.26886698603630066}}
+{"type": "atom", "atoms": {"p0": 5}, "kwargs": {"mu": 1.879652976989746, "eta": 7.284643173217773, "soft_amp": 2.0968151092529297, "soft_decay": 0.26886698603630066}}
 {"type": "lennardjones", "atoms": {"p0": 0}, "kwargs": {"sigma": 0.34, "eps": 0.36}}
 {"type": "lennardjones", "atoms": {"p0": 1}, "kwargs": {"sigma": 0.34, "eps": 0.36}}
 {"type": "lennardjones", "atoms": {"p0": 2}, "kwargs": {"sigma": 0.325, "eps": 0.711}}
