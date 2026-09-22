@@ -12,6 +12,8 @@ gas-phase saddle, and a scan across the finished surface.
     uv run python quickstart/10_reaction.py
 """
 
+from pathlib import Path
+
 import numpy as np
 from ase.io import read
 
@@ -20,6 +22,8 @@ from fastforces import coupling as coupling_module
 from fastforces import reaction as reaction_module
 
 from _common import OUTPUT, banner, gfn2
+
+REFERENCE = Path(__file__).resolve().parent / "data"
 
 banner(__doc__)
 
@@ -106,8 +110,8 @@ print(
     "three geometries and an amplitude."
 )
 
-frames = read(str(OUTPUT / "h3o-h2o-transfer.xyz"), index=":", format="extxyz")
-stored = coupling_module.Coupling.from_jsonl(str(OUTPUT / "h3o-h2o-transfer.jsonl"))
+frames = read(str(REFERENCE / "h3o-h2o-transfer.xyz"), index=":", format="extxyz")
+stored = coupling_module.Coupling.from_jsonl(str(REFERENCE / "h3o-h2o-transfer.jsonl"))
 amplitude = float(stored.terms["threebody"]["kwargs"]["A"][0])
 refit = coupling_module.fit_threebody(frames, water.channel()[1], amplitude=amplitude)
 

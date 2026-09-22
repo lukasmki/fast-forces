@@ -14,15 +14,21 @@ calculator it was fit with is worse than useless.  Where that matters:
   * The `bondbond` and `bondangle` clamps are `-10` and `-20` *eV*, converted
     here; the example XML carries the bare numbers, which OpenMM would read as
     kJ/mol.
-  * The Morse bond keeps its `-D` offset and its Hulburt-Hirschfelder `c` term.
+  * The Morse bond keeps its `-D` offset, its Hulburt-Hirschfelder `c` term and
+    its one-sided `BOND_ASYMPTOTE`, which deepens the stretched branch only.
   * `angle` is `0.5*k*(cos-cos0)^2`, the convention the example files are
     written in, so an angle `k` means the same well on both sides.
-  * Both nonbonded pair terms carry a Fermi switch, and both are summed over
-    *every* pair with no exclusions -- `zbl.taper` switching ZBL off outside
-    1.5 A, `lj.switch` switching the 12-6 on outside 2.2 A, and
+  * Both nonbonded pair terms carry a Fermi switch -- `zbl.taper` switching ZBL
+    off outside 1.5 A, `lj.switch` switching the 12-6 on outside 2.2 A, and
     `lj.CORE_FRACTION` replacing the `r**-12` divergence with a tangent.  A
     transcription that dropped any of those would be a different force field at
     exactly the separations bonded pairs sit at.
+  * All three nonbonded forces carry `params.exclusions` as real OpenMM
+    exclusions, which is the export of `forcefield/exclusions.py`.  OpenMM
+    removes an excluded pair from the sum outright, where the calculator sums it
+    and subtracts it back; the two agree because both halves of the calculator's
+    cancellation go through one `pair_potential`, so what it subtracts is
+    exactly what it added.
 
 Electrostatics is the one place the export cannot be faithful, and only for one
 of the two terms.  ACKS2 solves for the charges at every geometry; OpenMM has no
@@ -42,15 +48,22 @@ from ase.data import atomic_masses
 
 from ..forcefield.acks2 import ACKS2
 from ..forcefield.ewald import CCOUL
+from ..forcefield.exclusions import EXCLUDE_COULOMB
 from ..forcefield.lj import CORE_FRACTION, SWITCH_RADIUS, SWITCH_WIDTH
-from ..forcefield.qforce import SHAPE_DECAY
+from ..forcefield.qforce import (
+    BOND_ASYMPTOTE,
+    CLIP_BONDANGLE,
+    CLIP_BONDBOND,
+    SHAPE_DECAY,
+)
 from ..forcefield.zbl import CCOUL as ZBL_CCOUL
 from ..forcefield.zbl import PHI_B, PHI_C, SCREENING_LENGTH, TAPER_RADIUS, TAPER_WIDTH
 from . import units as u
 
-# Clamps from `QForce.compute_bondbond` / `compute_bondangle`, in eV.
-CLIP_BONDBOND = -10.0
-CLIP_BONDANGLE = -20.0
+# Clamps from `QForce.compute_bondbond` / `compute_bondangle`, in eV, imported
+# rather than restated so the two sides cannot drift.  They are stated in kJ/mol
+# there and converted, so `u.ENERGY` here takes them back to the -10 and -20 the
+# example XML carries bare.
 
 # The Hulburt-Hirschfelder decay `QForce.compute_bond` defaults to.  The export
 # formats have no slot for it, so it has to stay at the default on both sides;
@@ -68,9 +81,12 @@ SWITCH_CLAMP = 300.0
 # Angstrom.  `forcefield.ewald.GAMMA`, under the name the expression uses.
 ACKS2_BETA = 2.0
 
+# `Dw` is the stretched branch's deeper well, `D + asym`; `step(r-r0)` picks it.
+# The two branches agree in value, slope and curvature at `r = r0`, so which one
+# the step hands back exactly there does not matter.
 MORSE = (
-    "D*((1-exp(-a*(r-r0)))^2 - 1 + c*s*s*s*exp(-hh_decay*s));"
-    " s=a*max(r-r0,0); a=sqrt(k/(2*D))"
+    "Dw*((1-exp(-a*(r-r0)))^2 + c*s*s*s*exp(-hh_decay*s)) - D;"
+    " s=a*max(r-r0,0); a=sqrt(k/(2*Dw)); Dw=D+asym*step(r-r0)"
 )
 # `QForce.compute_angle`, transcribed -- 1/2 included, which is also the
 # convention the example XML and jsonl are written in.
@@ -181,10 +197,6 @@ def _nonbonded_forces(params, positions, edge):
     forces = []
 
     if "lennardjones" in params.terms:
-        # No exclusions, deliberately: `LennardJones` dropped them, so adding
-        # them here would make the exported system disagree with the calculator
-        # it was fit with on every 1-2, 1-3 and 1-4 pair.  `params.exclusions`
-        # is still carried, and is still the right mask -- nothing consumes it.
         lj = openmm.CustomNonbondedForce(LENNARDJONES)
         lj.setName("LennardJones")
         lj.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
@@ -204,10 +216,9 @@ def _nonbonded_forces(params, positions, edge):
         for atom in range(len(params.numbers)):
             i = by_index[atom]
             lj.addParticle([float(sigma[i]), float(eps[i])])
+        _add_exclusions(lj, params)
         forces.append(lj)
 
-    # ZBL takes no exclusions -- see the `ZBL` docstring; it is a function of the
-    # geometry and the elements alone.
     zbl = openmm.CustomNonbondedForce(ZBL)
     zbl.setName("ZBL")
     zbl.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
@@ -223,6 +234,7 @@ def _nonbonded_forces(params, positions, edge):
         zbl.addGlobalParameter(f"pb{k}", b)
     for z in params.numbers:
         zbl.addParticle([float(z)])
+    _add_exclusions(zbl, params)
     forces.append(zbl)
 
     charges = exported_charges(params, positions)
@@ -235,8 +247,30 @@ def _nonbonded_forces(params, positions, edge):
         coulomb.addGlobalParameter("beta", ACKS2_BETA / u.LENGTH)
         for q in charges:
             coulomb.addParticle([float(q)])
+        if EXCLUDE_COULOMB:
+            _add_exclusions(coulomb, params)
         forces.append(coulomb)
     return forces
+
+
+def _add_exclusions(force, params):
+    """Put `params.exclusions` on a `CustomNonbondedForce` as OpenMM exclusions.
+
+    The export of `forcefield/exclusions.py`, and the only faithful one
+    available: OpenMM drops an excluded pair from the sum outright, where the
+    calculator sums it and subtracts it back through the same
+    `pair_potential`.  Those are the same number, so the exported force matches
+    -- but only because the calculator's two halves are one function.  A
+    subtraction written out a second time would make this line a lie.
+
+    A field with no mask exports with no exclusions, which is what evaluating it
+    would do too.
+    """
+    mask = params.exclusions
+    if mask is None:
+        return
+    for i, j in zip(*np.nonzero(np.triu(np.asarray(mask, dtype=bool), 1))):
+        force.addExclusion(int(i), int(j))
 
 
 def exported_charges(params, positions: np.ndarray | None) -> np.ndarray | None:
@@ -291,6 +325,7 @@ def _bonded_forces(params):
         for name in ("r0", "k", "D", "c"):
             bond.addPerBondParameter(name)
         bond.addGlobalParameter("hh_decay", HH_DECAY)
+        bond.addGlobalParameter("asym", BOND_ASYMPTOTE * u.ENERGY)
         atoms = np.asarray(params.terms["bond"]["atoms"])
         values = [_converted(params, "bond", n) for n in ("r0", "k", "D", "c")]
         for i, (a, b) in enumerate(atoms):

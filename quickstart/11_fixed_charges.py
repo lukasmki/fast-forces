@@ -20,9 +20,7 @@ calculation: a per-atom `mulliken` array on the training frames.
 """
 
 import copy
-import textwrap
 import time
-import warnings
 from dataclasses import replace
 
 import numpy as np
@@ -32,6 +30,7 @@ from tblite.ase import TBLite
 import fastforces as ff
 from fastforces.export.openmm import exported_charges
 from fastforces.forcefield import electrostatic_evaluator
+from fastforces.forcefield.ewald import CCOUL, Ewald
 
 from _common import OUTPUT, banner
 
@@ -261,7 +260,7 @@ this form, and a term with a different kernel would export to something that is
 not itself.""")
 
 # ---------------------------------------------------------------------
-# the one thing the term will not check for you
+# a charged cell, and what it costs
 # ---------------------------------------------------------------------
 print("-" * 68)
 periodic = atoms.copy()
@@ -273,29 +272,35 @@ periodic.pbc = True
 ion = copy.deepcopy(fixed)
 ion.terms["coulomb"]["kwargs"]["q"] = q + 1.0 / len(q)
 
-caught_text = None
+energies = {}
 for name, params in (("neutral", fixed), ("net +1 e", ion)):
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        energy = ff.evaluate(periodic, params)[0]
-    # Other libraries warn about other things; this is the one being shown.
-    ours = [w for w in caught if "net charge" in str(w.message)]
-    if ours:
-        caught_text = str(ours[0].message)
-    print(f"  periodic, {name:9s} {energy:10.4f} eV   {'warned' if ours else 'quiet'}")
-print(
-    "\n" + textwrap.fill(caught_text, 68, initial_indent="  ", subsequent_indent="  ")
-)
+    energies[name] = ff.evaluate(periodic, params)[0]
+    print(f"  periodic, {name:9s} {energies[name]:10.4f} eV")
+
+# What the `k = 0` background charges an ion, from the splitting the cell fixes.
+setup = Ewald(np.array(periodic.cell))
+background = 0.5 * CCOUL * setup.background * 1.0**2
+print(f"\n  the k=0 background at this cell   {background:+10.4f} eV")
+print(f"  difference, ion minus neutral    "
+      f"{energies['net +1 e'] - energies['neutral']:+10.4f} eV")
 
 print("""
 ACKS2 constrains its charges to sum to zero; this term carries whatever it is
-handed.  That matters only under periodic boundaries, where `ewald` omits the
-`k = 0` reciprocal term -- legitimate for a neutral cell, and for a charged one
-an energy missing its neutralizing background.  It warns once per evaluator
-rather than raising, because an isolated ion is a perfectly ordinary thing to
-evaluate under open boundaries, where that term does not exist at all.  Charges
-read off a neutral molecule sum to zero by construction, so the warning is
-about what is done with them afterwards.
+handed.  That used to matter under periodic boundaries, where the `k = 0`
+reciprocal term is the divergent one and was simply omitted -- legitimate for a
+neutral cell, and for a charged one an energy quietly missing its neutralizing
+background.  It is omitted still, but the background it leaves behind,
+`-pi / (kappa^2 V)` in every entry of the kernel, is now carried explicitly, so
+a charged cell means the standard thing: the energy against a uniform
+compensating background, which is the only thing a periodic sum over a charged
+cell can mean.  The number above is that term, `ccoul/2 * background * (sum q)^2`
+-- a part of the difference between the two rows, not all of it, since shifting
+every charge also moves the contraction itself.
+
+The reason it had to come back is not ions at all.  The exclusions of section 5
+contract the kernel against a screened weight, and a screened weight does not
+sum to zero over a neutral system -- so each `K_ij` has to be well defined on
+its own, and a constant that "cancels anyway" no longer does.
 
 One further limit, and it is why this example fits a molecule rather than a
 reaction: `reaction.state_parameters` refuses a fragment carrying fixed

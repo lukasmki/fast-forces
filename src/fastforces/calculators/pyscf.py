@@ -136,6 +136,27 @@ class PySCFCalculator(Calculator):
     density matrix ``W = C L C^T`` with ``L = C^T F C``, where ``C`` is recovered
     from ``D`` by diagonalizing it in the Löwdin basis.  It reduces to the
     ordinary SCF gradient when ``D`` is converged (``L`` diagonal).
+
+    Implicit solvation (``pcm``)
+        ``pcm`` names a PySCF polarizable continuum model -- ``"IEF-PCM"``,
+        ``"C-PCM"``, ``"COSMO"`` or ``"SS(V)PE"`` -- and ``pcm_eps`` the
+        dielectric constant of the continuum, water's by default.  The reaction
+        field is solved self-consistently with the density, and both evaluation
+        modes carry it: the Born-Oppenheimer path through PySCF's own solvent
+        gradient, the Car-Parrinello path by adding the solvent potential to its
+        Fock matrix and the solvent gradient to its forces, which PySCF would
+        otherwise only fold in inside ``get_fock`` and the gradient ``kernel``
+        -- neither of which that path calls.
+
+        What a continuum buys is screening: a bare ion is several eV more
+        stable in it (hydroxide by ~4 eV at PBE/6-31G), which puts charged
+        and neutral fragments on a footing closer to solution.  What it does
+        not buy is a barrier for the hydronium-water transfer.  With IEF-PCM
+        the shared-proton geometry is still a single well, exactly as in the
+        gas phase, because the asymmetry that localizes the proton in liquid
+        water comes from specific solvation of the two oxygens, which a
+        uniform dielectric cannot supply.  That channel still needs supplied
+        frames -- a constrained O-O path -- rather than a saddle search.
     """
 
     implemented_properties = ["energy", "forces", "charges"]
@@ -150,6 +171,8 @@ class PySCFCalculator(Calculator):
         threads: int | None = None,
         level_shift: float | tuple[float, float] = 0.0,
         cp: bool = False,
+        pcm: str | None = None,
+        pcm_eps: float = 78.3553,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -157,6 +180,8 @@ class PySCFCalculator(Calculator):
         self.charge: int | None = charge
         self.spin: int | None = spin
         self.cp: bool = cp
+        self.pcm: str | None = pcm
+        self.pcm_eps: float = pcm_eps
 
         self.energy_pipe = (
             gto.M()
@@ -165,6 +190,10 @@ class PySCFCalculator(Calculator):
             .set(conv_tol=1e-6, level_shift=level_shift)
             .density_fit()
         )
+        if pcm is not None:
+            self.energy_pipe = self.energy_pipe.PCM()
+            self.energy_pipe.with_solvent.method = pcm
+            self.energy_pipe.with_solvent.eps = pcm_eps
         self.forces_scanner = self.energy_pipe.nuc_grad_method().as_scanner()
         # the scanner owns its own mean-field object; everything below drives it
         self.mf: scf.hf.SCF = self.forces_scanner.base
@@ -305,6 +334,12 @@ class PySCFCalculator(Calculator):
         # bare Kohn-Sham matrix; deliberately not mf.get_fock, which would fold
         # in the SCF level shift and damping -- those must not enter the EOM
         fock = np.asarray(self.mf.get_hcore()) + np.asarray(veff)
+        if self.pcm is not None:
+            # `energy_tot` already counts the solvent through `veff.e_solvent`;
+            # its potential rides alongside on `veff.v_solvent` and has to be
+            # added here by hand, or the EOM would propagate the gas-phase
+            # density on the solvated surface.
+            fock = fock + np.asarray(veff.v_solvent)
         self._fock = [fock[0], fock[1]]
 
         # PySCF's gradient wants MOs, so recover them from D.  In the Löwdin
@@ -359,4 +394,8 @@ class PySCFCalculator(Calculator):
             )
             + self.forces_scanner.grad_nuc()
         )
+        if self.pcm is not None:
+            # what the solvent gradient `kernel` adds on the BO path, at this
+            # (unconverged) density rather than the converged one
+            gradient = gradient + self.mf.with_solvent.grad(dm[0] + dm[1])
         return energy, gradient, dm

@@ -14,6 +14,7 @@ exporters cannot drift apart.
 import json
 from dataclasses import dataclass, field
 
+import networkx as nx
 import numpy as np
 
 from .export import units as export_units
@@ -30,6 +31,30 @@ NON_QFORCE_TERMS = ("atom", "coulomb", "lennardjones", "reference")
 ELECTROSTATIC_TERMS = ("atom", "coulomb")
 
 
+
+def _exclusion_mask(terms: dict, n_atoms: int) -> np.ndarray:
+    """The 1-2/1-3/1-4 mask implied by a term dict's `bond` block.
+
+    Derived rather than stored.  A `.jsonl` states the bond graph once, in its
+    bond terms, and a mask written alongside it could go stale against an edited
+    radius or a removed bond -- which would show up only as a field no longer
+    reproducing its own energy.  The graph here is built the same way
+    `Topology.from_terms` builds it, and the depth is `forcefield.exclusions`'s,
+    so a loaded field excludes exactly what the field it was written from did.
+    """
+    from .forcefield.exclusions import EXCLUSION_DEPTH
+    from .topology import exclusion_mask
+
+    graph = nx.Graph()
+    graph.add_nodes_from(range(n_atoms))
+    bonds = terms.get("bond")
+    if bonds is not None:
+        graph.add_edges_from(
+            (int(a), int(b)) for a, b in np.asarray(bonds["atoms"])[:, :2]
+        )
+    return exclusion_mask(graph, n_atoms, EXCLUSION_DEPTH)
+
+
 @dataclass
 class Parameters:
     """A complete force field for one topology.
@@ -40,11 +65,16 @@ class Parameters:
 
     numbers: np.ndarray
     terms: dict[str, dict] = field(default_factory=dict)
-    # The 1-2/1-3/1-4 mask from `Topology`.  No evaluator consumes it any more,
-    # and neither does the OpenMM export: `LennardJones` dropped its exclusions
-    # and `ZBL` never had any, so both nonbonded terms are summed over every
-    # pair.  It is kept because it is a real property of the topology the field
-    # was built on, and `Topology` still derives it.
+    # The 1-2/1-3/1-4 mask from `Topology`, and the only topology the three
+    # whole-system pair sums ever see.  `forcefield/exclusions.py` takes every
+    # pair it marks back off all three -- `-u_ZBL` and `-u_126` additively, the
+    # Coulomb contraction through a screen -- and `export.openmm` writes it into
+    # the exported system as real OpenMM exclusions.
+    #
+    # `None` means "no exclusions", which is a force field that charges every
+    # bonded pair two nonbonded terms and will not reproduce its own reference
+    # energy.  Both routes in set it: `fit` from the topology it fit against,
+    # `from_rows` from the `bond` terms it just read.
     exclusions: np.ndarray | None = None
     report: dict = field(default_factory=dict)
 
@@ -175,7 +205,12 @@ class Parameters:
                 + 1
             )
             numbers = np.zeros(n_atoms, dtype=int)
-        return cls(numbers=np.asarray(numbers), terms=terms)
+        numbers = np.asarray(numbers)
+        return cls(
+            numbers=numbers,
+            terms=terms,
+            exclusions=_exclusion_mask(terms, len(numbers)),
+        )
 
     @classmethod
     def from_jsonl(cls, path: str, numbers: np.ndarray | None = None):

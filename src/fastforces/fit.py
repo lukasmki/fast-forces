@@ -32,17 +32,18 @@ Bonds are the exception to the linearity, and are fit in a separate nonlinear
 block.  Two reasons, and both are forced:
 
   * The Morse exponent is `sqrt(k / 2D)`, so a Morse bond is not linear in `k`.
-  * `r0` cannot be read off the equilibrium geometry.  Neither `ZBL` nor
-    `LennardJones` takes exclusions -- deliberately, see their docstrings -- so
-    both act on bonded pairs, and `zbl.taper` still retains 92-99% of the ZBL
-    repulsion at ordinary bond lengths: tens of eV, and more to the point ~20
-    eV/A.  The reference force there is zero, so something has to pull back, and
-    a bond sitting exactly at its own `r0` exerts no force at all.  The bond has
-    to be *pre-compressed*: `r0` is an effective parameter that balances the
-    nonbonded baseline, not a measurement of the bond length.  The example force
-    field is built this way too -- its O-H `r0` is 0.70 A against a true 0.97 A,
-    while the `bondangle` cross term that references the same bond keeps the
-    true value.
+  * `r0` cannot be read off the equilibrium geometry.  It is an effective
+    parameter that balances whatever nonbonded baseline survives on the atoms
+    the bond connects, not a measurement of the bond length -- so it is fit,
+    inside bounds taken from the measured geometry, rather than fixed at it.
+    How much balancing there is to do depends on the exclusions: within a
+    molecule small enough that every pair is inside `EXCLUSION_DEPTH` there is
+    none left and `r0` lands near the true length, while a pair that survives
+    the exclusion still carries ~20 eV/A of ZBL against a reference force of
+    zero and has to be pre-compressed against it.  The example force field is
+    built the second way -- its O-H `r0` is 0.70 A against a true 0.97 A, while
+    the `bondangle` cross term that references the same bond keeps the true
+    value.
 
 So the fit alternates: solve every other force constant linearly with the bond
 contribution held fixed, then refine the handful of bond parameters nonlinearly
@@ -72,7 +73,7 @@ import numpy as np
 from scipy.optimize import least_squares, lsq_linear
 
 from . import elements
-from .forcefield import electrostatic_evaluator
+from .forcefield import electrostatic_evaluator, exclusions
 from .forcefield.lj import LennardJones
 from .forcefield.qforce import QForce
 from .forcefield.zbl import ZBL
@@ -470,15 +471,20 @@ def _coulomb_block(topology: Topology, equilibrium) -> dict:
 def _nonbonded(params, frames):
     """Energies and forces of the fixed nonbonded baseline, per frame.
 
-    `LennardJones` takes no exclusions -- see its module docstring -- so this is
-    the whole pair sum, bonded pairs included, exactly as the calculator
-    evaluates it.  What it contributes at a bond length is part of the baseline
-    the bonded fit has to absorb, which is the same bargain `ZBL` already made.
+    All three pair sums run over every pair, bonded ones included, and
+    `forcefield/exclusions.py` then takes the 1-2/1-3/1-4 part back off --
+    exactly as `FastForces` evaluates them, which is what this has to be.  What
+    survives the exclusion at a bond length is part of the baseline the bonded
+    fit has to absorb, which is the bargain `ZBL` and the switched 12-6 both
+    make.
 
-    The electrostatic term is whichever one `params` carries, evaluated through
-    the same factory `FastForces` uses, because this is the number the bonded
-    residuals are taken against: fit against one term and evaluate with the
-    other and every force constant is off by the difference.
+    **Both halves have to be here, and they have to be these halves.**  This is
+    the number the bonded residuals are taken against, so an exclusion applied
+    here and not in the calculator -- or the other way round -- lands in every
+    fitted force constant as a silent offset.  It goes through the same
+    functions `FastForces` calls for the same reason the electrostatic term is
+    chosen by the same factory: fit against one and evaluate with the other and
+    the difference is in the parameters, not in an error message.
 
     All three return a virial as well.  The fit works at fixed cell, so they are
     dropped here rather than carried through unused.
@@ -487,12 +493,23 @@ def _nonbonded(params, frames):
     lj = LennardJones()
     zbl = ZBL()
     has_lj = "lennardjones" in params.terms
+    mask = params.exclusions
+    term = params.electrostatics()
+
+    screen = None
+    if mask is not None and term is not None and exclusions.EXCLUDE_COULOMB:
+        indices = params.terms[term]["atoms"][:, 0]
+        screen = exclusions.screen(
+            [mask[np.ix_(indices, indices)]], [1.0], len(indices)
+        )
+
     energies, forces = [], []
     for frame in frames:
         pos = frame.get_positions()
         pbc, cell = frame.pbc, np.array(frame.cell)
+        numbers = frame.get_atomic_numbers()
         e1, f1, _ = (
-            electrostatic(pos, pbc, cell, params.terms)
+            electrostatic(pos, pbc, cell, params.terms, screen)
             if electrostatic is not None
             else (0.0, np.zeros_like(pos), None)
         )
@@ -501,9 +518,15 @@ def _nonbonded(params, frames):
             if has_lj
             else (0.0, np.zeros_like(pos), None)
         )
-        e3, f3, _ = zbl(pos, frame.get_atomic_numbers(), pbc, cell)
-        energies.append(e1 + e2 + e3)
-        forces.append((f1 + f2 + f3).reshape(-1))
+        e3, f3, _ = zbl(pos, numbers, pbc, cell)
+        e4, f4 = 0.0, np.zeros_like(pos)
+        if mask is not None:
+            sigma, eps = exclusions.lj_parameters(params.terms, len(numbers))
+            e4, f4, _ = exclusions.additive(
+                pos, numbers, pbc, cell, mask, sigma, eps
+            )
+        energies.append(e1 + e2 + e3 + e4)
+        forces.append((f1 + f2 + f3 + f4).reshape(-1))
     return np.array(energies), np.array(forces)
 
 
@@ -535,6 +558,8 @@ def _centered(values: np.ndarray) -> np.ndarray:
 def _solve_linear(a_energy, a_force, b_energy, b_force, labels, config, weight):
     """Bounded, regularized least squares for every non-bond force constant."""
     n_classes = len(labels)
+    if n_classes == 0:
+        return np.zeros(0)
     a_energy = _centered(a_energy)
     b_energy = _centered(b_energy)
 
@@ -562,9 +587,13 @@ def _refine_bonds(
 ):
     """Nonlinear refine of `(r0, k, D, c)` per bond class, everything else fixed.
 
-    `r0` is bounded below the geometric bond length and above a floor: the
-    compression that balances the nonbonded baseline is real, but a bond that
-    collapses to nothing is a fit artifact, not a force field.
+    `r0` is bounded to a window around the geometric bond length rather than
+    fixed at it: whatever nonbonded baseline survives the exclusions on a bonded
+    pair has to be balanced somewhere, and this is where.  The window is wide
+    downwards because that balancing can be large -- a pair outside
+    `EXCLUSION_DEPTH` carries ~20 eV/A of ZBL -- and a floor at half the
+    measured length, because a bond that collapses to nothing is a fit artifact
+    and not a force field.
     """
     n = topology.n_classes("bond")
 
@@ -584,11 +613,12 @@ def _refine_bonds(
         )
 
     x0 = np.concatenate([shape[name] for name in _BOND_NAMES])
-    # `r0` is allowed down to half the true bond length: the example force field
-    # compresses an O-H bond from 0.97 A to 0.70 A, so a wide range is needed,
-    # but a bond shorter than that has stopped describing a bond.  `c` spans the
-    # example's 14.8; `D` is capped well above any real dissociation energy
-    # because it is absorbing part of the ZBL repulsion, not just a bond.
+    # `r0` is allowed down to half the true bond length: fitted without
+    # exclusions, an O-H bond compressed from 0.97 A to 0.70 A against the ZBL
+    # it then had to balance, so a wide range is needed -- but a bond shorter
+    # than that has stopped describing a bond.  `c` spans the example's 14.8;
+    # `D` is capped well above any real dissociation energy because it can be
+    # absorbing part of the surviving repulsion, not just a bond.
     lower = np.concatenate(
         [
             0.5 * geometric_r0,
@@ -703,8 +733,10 @@ def fit(
         energies, forces, labels = _basis_columns(topology, values, qforce, vecs)
         energy_rows.append(energies)
         force_rows.append(forces.T)
-    a_energy = np.array(energy_rows)
-    a_force = np.concatenate(force_rows, axis=0)
+    # Shaped explicitly: a diatomic has nothing but its bond, and an empty
+    # column list would otherwise collapse to `(0,)` rather than `(rows, 0)`.
+    a_energy = np.array(energy_rows).reshape(len(frames), len(labels))
+    a_force = np.concatenate(force_rows, axis=0).reshape(b_force.size, len(labels))
 
     def bond_target(k_values):
         """What the bonds have to reproduce once everything else is fixed."""

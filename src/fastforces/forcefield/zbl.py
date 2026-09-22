@@ -15,7 +15,7 @@ against ACKS2 alone reached 0.60 A intermolecular contacts with 55 pairs inside
 1.2 A, reading -46.6 eV of nonbonded energy -- 0.85 eV per pair, which is this
 table.  This is the term that opposes it.
 
-**Why it is topology-independent, and why that is the whole design.**  The
+**Why the pair sum takes no topology, and why that is the whole design.**  The
 obvious repulsion to reach for is the Lennard-Jones already in the templates,
 excluded between bonded atoms the way any fixed-topology force field excludes
 it.  That was tried four times.  It fails because q-force's 12-6 is enormous at
@@ -30,25 +30,24 @@ non-bonded contacts came back with EVB amplitudes of -72 to -108 eV.
 
 What made that survivable was not abandoning the 12-6 but shrinking it: since
 `lj.switch` the term is three to four orders of magnitude smaller at a bond
-length, small enough to need no exclusions, and it is back in the force field on
-the same terms this one is on.  The paragraphs below are why this module carries
-the short range and that one does not.
+length, and it is back in the force field on the same terms this one is on.  The
+paragraphs below are why this module carries the short range and that one does
+not.
 
-This term takes no topology at all.  Its only parameter is the atomic number,
-which it reads from `numbers` rather than from a term list, so there is no
-template, no remapping and no per-state path by which it could acquire a state
-dependence.  That is deliberate and it is structural: a term identical across
-every diabatic state adds the same constant to every EVB diagonal, and a common
-shift of the diagonal moves `np.linalg.eigh`'s eigenvalue by exactly that
-constant while leaving the eigenvectors untouched.  So this term *cannot*
-produce a plateau, a spurious coupling amplitude, a pivot dependence, or a
-discontinuity at the bimolecular cutoff -- not "does not", cannot.  Each of the
-four previous failures lived in the degree of freedom this removes.
+**The sum here takes no topology at all.**  Its only parameter is the atomic
+number, which it reads from `numbers` rather than from a term list, so there is
+no template, no remapping and no per-state path by which the sum could acquire a
+state dependence.  What *is* state-dependent is which pairs should not have been
+counted, and that lives in one place for all three whole-system sums --
+`forcefield/exclusions.py` -- as a subtraction on each diabatic diagonal against
+that state's own bond graph, using this module's own `pair_potential` so the
+cancellation is exact.  Each of the four failures above lived in a version of
+that subtraction that was gated, weighted, or half-applied instead.
 
-The same property means it cancels exactly out of every energy *difference*,
-including the diabatic margins `fit/dissociation.py` scores channels on.  It
-buys stability and it buys nothing at all for fittability; that work belongs to
-the bonded fit.
+The part that survives the exclusion cancels exactly out of every energy
+*difference*, including the diabatic margins `fit/dissociation.py` scores
+channels on.  It buys stability and it buys little for fittability; that work
+belongs to the bonded fit.
 
 **Form.**  The ZBL universal potential (Ziegler, Biersack and Littmark), which
 is what reactive potentials -- ReaxFF, Tersoff/ZBL -- use for exactly this job.
@@ -62,11 +61,14 @@ against the 12-6 it replaces:
     O-O   1.210  the O2 bond length     1348 eV   11.6 eV
     O-H   0.600  the observed fusion    2.6e5 eV  20.9 eV
 
-It is applied to bonded pairs too, since it knows nothing about bonds.  Those
-values are absorbed by the fitted Morse depths -- `fit/dissociation.py` solves
-against `E_QForce + E_nonbonded`, and this term is part of `E_nonbonded` -- so a
-template still reproduces its own reference atomization energy.  O2 is the
-stress case: +11.6 eV and +36.6 eV/A at its own bond length.
+The pair sum reaches bonded pairs too, since it knows nothing about bonds, and
+`exclusions.additive` takes those back off again against the state's bond graph.
+What survives -- pairs further apart than `EXCLUSION_DEPTH`, and everything
+intermolecular -- is absorbed by the fitted Morse depths, since
+`fit/dissociation.py` solves against `E_QForce + E_nonbonded` and this term is
+part of `E_nonbonded`, so a template still reproduces its own reference
+atomization energy.  O2 is the stress case for the raw numbers: +11.6 eV and
++36.6 eV/A at its own bond length.
 
 **The taper, and why the term had to acquire one.**  ZBL is a screened
 *nuclear* potential.  Its screening function was fitted where two nuclei are
@@ -271,7 +273,11 @@ def pair_potential(
 
 
 class ZBL:
-    """Tapered ZBL repulsion summed over every pair, with no exclusions.
+    """Tapered ZBL repulsion summed over every pair.
+
+    No exclusions *here*: this is the whole-system sum, the same number on every
+    diabatic state, and `exclusions.additive` takes the near-neighbour part back
+    off on each state's own diagonal through this module's `pair_potential`.
 
     Deliberately *not* wired like `ACKS2` and `LennardJones`.  Those read their
     per-atom parameters out of `term_dict`, which means they carry the term-order

@@ -30,6 +30,8 @@ and the map numbers, sorted, are the combined index order: atom `i` is the one
 carrying map number `i + 1` if the maps are `1..n`, and in general the `i`-th
 smallest map number.  Both sides are read in that order, so `reactant_bonds` and
 `product_bonds` are directly comparable and their difference is the reaction.
+`map_atoms` writes that form from a plain `[OH3+].O>>O.[OH3+]`, by two rules its
+docstring states.
 """
 
 import numpy as np
@@ -284,6 +286,143 @@ def _component(bonds: frozenset, n: int, start: int) -> set:
                 seen.add(nxt)
                 stack.append(nxt)
     return seen
+
+
+def map_atoms(smiles: str) -> str:
+    """Atom-map a reaction SMILES written without map numbers.
+
+    `parse` needs every atom mapped, hydrogens included, which is the honest
+    input but not the natural one: `[OH3+].O>>O.[OH3+]` says what the reaction
+    is as plainly as the fourteen-bracket form does.  The mapping is recovered
+    by two rules, and they are the whole contract:
+
+      * Every atom other than hydrogen keeps its place: the `k`-th oxygen on
+        the left is the `k`-th oxygen on the right, in order of appearance.
+        The order the product side is written in is therefore what names the
+        reaction -- `[OH3+].O>>O.[OH3+]` is a transfer, `[OH3+].O>>[OH3+].O`
+        is nothing at all.
+      * Hydrogens, which a SMILES cannot tell apart, are assigned to break and
+        form as few bonds as possible.  That is a linear assignment -- a
+        hydrogen's only bonds are to atoms the first rule already placed -- so
+        it is exact and cheap.  Among equally good assignments the
+        lowest-numbered hydrogen is the one that moves, which is the convention
+        the reference datasets use.
+
+    The combined order is each heavy atom followed by its own hydrogens, in the
+    order the reactant side is written, so the result reads like the mapped
+    SMILES a person would write -- for the water channel, exactly the one in
+    this module's docstring.
+
+    A SMILES that is already fully mapped is returned unchanged.  One with
+    hydrogen-hydrogen bonds on either side is refused: the second rule does not
+    hold there, and such a reaction has to be mapped by hand.
+    """
+    from rdkit import Chem
+    from scipy.optimize import linear_sum_assignment
+
+    if smiles.count(">>") != 1:
+        raise ReactionError(
+            f"expected one '>>' in the reaction SMILES, got {smiles.count('>>')}"
+        )
+    sides = smiles.split(">>")
+
+    raw = Chem.SmilesParserParams()
+    raw.removeHs = False
+    listed = [Chem.MolFromSmiles(side, raw) for side in sides]
+    if any(mol is None for mol in listed):
+        raise ReactionError(f"RDKit could not parse {smiles!r}")
+    maps = [a.GetAtomMapNum() for mol in listed for a in mol.GetAtoms()]
+    if all(maps):
+        return smiles
+    if any(maps):
+        raise ReactionError(
+            "the reaction SMILES maps some atoms and not others. Map every atom, "
+            "hydrogens included, or none -- a partial mapping would have to be "
+            "completed by a guess the caller already chose not to leave to us"
+        )
+
+    reactant, product = (Chem.AddHs(mol) for mol in listed)
+    for mol in (reactant, product):
+        for bond in mol.GetBonds():
+            if bond.GetBeginAtom().GetAtomicNum() == bond.GetEndAtom().GetAtomicNum() == 1:
+                raise ReactionError(
+                    f"{smiles!r} has a hydrogen-hydrogen bond, which the automatic "
+                    "mapping cannot place; write the reaction atom-mapped instead"
+                )
+
+    # combined order: each heavy atom, then its hydrogens; a bare hydrogen
+    # (a proton, an H atom) where it is written
+    order: list[int] = []
+    for atom in reactant.GetAtoms():
+        if atom.GetAtomicNum() != 1:
+            order.append(atom.GetIdx())
+            order += sorted(
+                n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1
+            )
+        elif atom.GetDegree() == 0:
+            order.append(atom.GetIdx())
+    combined = {idx: c for c, idx in enumerate(order)}
+
+    def by_element(mol) -> dict[int, list[int]]:
+        out: dict[int, list[int]] = {}
+        for atom in mol.GetAtoms():
+            out.setdefault(atom.GetAtomicNum(), []).append(atom.GetIdx())
+        return out
+
+    left, right = by_element(reactant), by_element(product)
+    if {z: len(v) for z, v in left.items()} != {z: len(v) for z, v in right.items()}:
+        raise ReactionError(
+            f"the two sides of {smiles!r} do not contain the same atoms -- an EVB "
+            "state pair is two bonding topologies over one set of atoms"
+        )
+
+    # heavy atoms: by element, in order of appearance
+    placed: dict[int, int] = {}  # product atom index -> combined index
+    for z, indices in left.items():
+        if z != 1:
+            for r, p in zip(indices, right[z], strict=True):
+                placed[p] = combined[r]
+
+    # hydrogens: the assignment that changes the fewest bonds
+    r_h = sorted(left.get(1, []), key=combined.__getitem__)
+    p_h = right.get(1, [])
+    # A hydrogen's neighbours are all heavy atoms (H-H was refused above), so
+    # both sets are in combined indices already.
+    r_sets = [
+        {combined[n.GetIdx()] for n in reactant.GetAtomWithIdx(h).GetNeighbors()}
+        for h in r_h
+    ]
+    p_sets = [
+        {placed[n.GetIdx()] for n in product.GetAtomWithIdx(h).GetNeighbors()}
+        for h in p_h
+    ]
+    p_rank = np.argsort(np.argsort([min(s, default=-1) for s in p_sets], kind="stable"))
+    cost = np.zeros((len(r_h), len(p_h)))
+    for i, r_set in enumerate(r_sets):
+        for j, p_set in enumerate(p_sets):
+            changed = len(r_set ^ p_set)
+            # Tie-breaks, each far below one bond: a moving hydrogen is the
+            # lowest-numbered one available, and the rest keep their order.
+            cost[i, j] = changed + 1e-3 * i * (changed > 0) + 1e-6 * abs(i - p_rank[j])
+    rows, cols = linear_sum_assignment(cost)
+    for i, j in zip(rows, cols, strict=True):
+        placed[p_h[j]] = combined[r_h[i]]
+
+    for atom in reactant.GetAtoms():
+        atom.SetAtomMapNum(combined[atom.GetIdx()] + 1)
+    for atom in product.GetAtoms():
+        atom.SetAtomMapNum(placed[atom.GetIdx()] + 1)
+    mapped = f"{Chem.MolToSmiles(reactant)}>>{Chem.MolToSmiles(product)}"
+
+    parsed = parse(mapped)
+    if not parsed.changing:
+        raise ReactionError(
+            f"{smiles!r} maps onto itself with no bond broken or formed. Heavy "
+            "atoms are matched in order of appearance, so the product side has "
+            "to be written with the moving groups in their new places -- "
+            "`[OH3+].O>>O.[OH3+]`, not `[OH3+].O>>[OH3+].O` -- or atom-mapped"
+        )
+    return mapped
 
 
 def parse(smiles: str) -> Reaction:
@@ -866,6 +1005,7 @@ def fit_fragments(
     config=None,
     workdir: str = ".",
     seed: int = 42,
+    known: dict | None = None,
 ) -> dict:
     """Fit one force field per distinct molecule in `reaction`.
 
@@ -880,15 +1020,24 @@ def fit_fragments(
     the reaction's stationary points are found with.  That shared reference is
     what puts the diabatic energies and the reference barrier on one zero, which
     is the condition `coupling.fit_amplitude` needs.
+
+    `known` holds fits already made, keyed and shaped the same way; a fragment
+    found there is used as it stands.  That is how several reactions over the
+    same molecules share one fit each, and the shared-reference condition above
+    is the caller's to keep.
     """
     from pathlib import Path
 
     from . import parameterize
 
     out: dict = {}
+    known = known or {}
     for side in ("reactant", "product"):
         for fragment in reaction.fragments(side):
             if fragment.key in out:
+                continue
+            if fragment.key in known:
+                out[fragment.key] = known[fragment.key]
                 continue
             built = build(fragment.smiles, seed=seed)
             if len(built) < 2:
@@ -903,7 +1052,7 @@ def fit_fragments(
     return out
 
 
-def _lone_atom(atoms: Atoms, calc_factory) -> Parameters:
+def _lone_atom(atoms: Atoms, calc_factory, frame: Atoms | None = None) -> Parameters:
     """The force field of a single atom, which has nothing to fit.
 
     A monatomic fragment -- the leaving halide of an SN2, a bare proton -- has
@@ -917,6 +1066,9 @@ def _lone_atom(atoms: Atoms, calc_factory) -> Parameters:
     nonbonded baseline removed -- so that a `FastForces` total reproduces the
     reference energy here exactly, as it does approximately for a fitted
     molecule.
+
+    `frame` is `atoms` already labelled as `"equilibrium"`, for a caller that
+    wants to keep it; without one, `atoms` is labelled here.
     """
     from . import elements
     from .fit import _nonbonded
@@ -926,7 +1078,8 @@ def _lone_atom(atoms: Atoms, calc_factory) -> Parameters:
     for term, kwargs in elements.defaults_for(params.numbers).items():
         params.terms[term] = {"atoms": index_column.copy(), "kwargs": dict(kwargs)}
 
-    frame = sampling.label(atoms, calc_factory, "equilibrium")
+    if frame is None:
+        frame = sampling.label(atoms, calc_factory, "equilibrium")
     baseline, _ = _nonbonded(params, [frame])
     e0 = float(frame.get_potential_energy() - baseline[0])
     params.terms["reference"] = {
@@ -967,7 +1120,7 @@ def state_parameters(reaction: Reaction, side: str, fitted: dict) -> Parameters:
     rebuilt, and the fragments' Mulliken charges *are* molecular, so the two
     sides of a reaction genuinely carry different ones.  Electrostatics would
     then belong on each state's diagonal rather than in
-    `evb._topology_independent`, which is a change to how `EVB` and
+    `evb._whole_system`, which is a change to how `EVB` and
     `coupling.fit` are structured and not a change to this function.  Until
     that is designed, a fragment fitted with `electrostatics='fixed'` is
     rejected rather than silently given ACKS2's charges or one side's.
@@ -1133,6 +1286,8 @@ def parameterize(
     amplitude: float | None = None,
     initial: Atoms | None = None,
     logfile=None,
+    fragments: dict | None = None,
+    frames: list[Atoms] | None = None,
 ):
     """Fit a whole EVB surface from an atom-mapped reaction SMILES.
 
@@ -1157,12 +1312,25 @@ def parameterize(
     fragments against one method and the barrier against another puts two
     different zeros into `fit_amplitude` and the amplitude absorbs the
     difference.
+
+    Either expensive stage can be handed in instead.  `fragments` is fits
+    already made, as `fit_fragments` returns them; any molecule it lacks is
+    still fitted.  `frames` is the stationary points -- `[reactant, transition
+    state, product]`, or the reactant alone for a fission -- from a previous run,
+    a constrained path or a higher-level calculation, in this reaction's atom
+    order and carrying reference energies.  Both still have to share one
+    reference with each other, for the reason above.
     """
     from . import coupling as coupling_module
 
     reaction = parse(smiles)
     fragments = fit_fragments(
-        reaction, calc_factory, config=config, workdir=workdir, seed=seed
+        reaction,
+        calc_factory,
+        config=config,
+        workdir=workdir,
+        seed=seed,
+        known=fragments,
     )
     states = {
         side: state_parameters(reaction, side, fragments)
@@ -1170,7 +1338,9 @@ def parameterize(
     }
 
     kind, _ = reaction.channel()
-    if kind == "fission":
+    if frames is not None:
+        frames = list(frames)
+    elif kind == "fission":
         # A barrierless fission has no saddle to find, and `fit_twobody` needs
         # none: it walks the two diabats apart along the breaking bond instead.
         # The reactant geometry is still wanted, and it is the relaxed complex.

@@ -39,6 +39,7 @@ class ACKS2:
         self.u = None
         self.A = None
         self.state_hash = None
+        self.state = None
         self.kernels = KernelCache()
 
     def build_system(self, rij, params, kernel=None):
@@ -114,7 +115,7 @@ class ACKS2:
         """Solve the ACKS2 linear system.  All arguments are in term order."""
         return self.solve_charges(rij, params, kernel)[0]
 
-    def compute_coulomb(self, Q, rij, vecs, kernel=None):
+    def compute_coulomb(self, Q, rij, vecs, kernel=None, screen=None):
         """Coulomb energy, forces and virial.  All arguments and results in term order.
 
         The charges are held fixed here, so this is only the explicit part of
@@ -123,12 +124,17 @@ class ACKS2:
         its own energy.  That is the whole difference between this term and
         `Coulomb`, which shares the sum below and stops there because its
         charges really are fixed.
+
+        `screen` is the exclusion weight `S` of `forcefield/exclusions.py`, in
+        term order, or `None` for the unscreened sum.
         """
         if kernel is None:
             kernel = MinimumImage(rij, vecs)
-        return coulomb_sum(Q, kernel, self.CCOUL)
+        return coulomb_sum(Q, kernel, self.CCOUL, screen)
 
-    def compute_response_forces(self, Q, u, A, rij, vecs, params, kernel=None):
+    def compute_response_forces(
+        self, Q, u, A, rij, vecs, params, kernel=None, screen=None
+    ):
         """The dQ/dr part of the force, and its virial.  All arguments and results in term order.
 
         The charges are not independent of the geometry: they solve `A(r) x = b`
@@ -152,6 +158,14 @@ class ACKS2:
         symmetric weight matrix that `-lam^T (dA/dr) x` puts on it.  The
         softness block needs care: `X_ii = -sum_j X_ij`, so each off-diagonal
         `bsoft_ij` appears in four entries of `X` and all four contribute.
+
+        **The screen belongs to `dE/dx` and to nothing else.**  `A` is the
+        unscreened matrix -- it has to be, or the charges would become a
+        function of the bond graph -- so `dA/dr` is contracted against an
+        unmasked weight here while the `dE/dQ` that drives the adjoint carries
+        `S`.  Screening `A` as well is the mistake that makes the charges
+        state-dependent, and the measured cost of that is 0.88 eV of dependence
+        on the arbitrary choice of reference state.
         """
         natoms = len(Q)
         diag = np.diag_indices(natoms)
@@ -162,7 +176,8 @@ class ACKS2:
         # dE/dx, nonzero only on the charge block.  The multiplier rows are
         # geometry-free and the energy does not depend on u.
         gradient = np.zeros(A.shape[0])
-        gradient[:natoms] = self.CCOUL * (kernel.matrix() @ Q)
+        weighted = kernel.matrix() if screen is None else screen * kernel.matrix()
+        gradient[:natoms] = self.CCOUL * (weighted @ Q)
         lam = np.linalg.solve(A, gradient)
         lam_q, lam_u = lam[:natoms], lam[natoms : 2 * natoms]
 
@@ -193,25 +208,23 @@ class ACKS2:
         """The charge kernel for these boundary conditions, in term order."""
         return self.kernels.get(pos, vecs, rij, pbc, cell)
 
-    def __call__(
-        self, pos, pbc, cell, term_dict: dict
-    ) -> tuple[float, np.ndarray, np.ndarray]:
+    def prepare(self, pos, pbc, cell, term_dict: dict):
+        """Everything below the geometry and above the screen, memoized.
+
+        Returns `(indices, params, vecs, rij, kernel)` in term order and leaves
+        the solved `Q`, `u` and `A` on the instance.  Split out of `__call__`
+        because `EVB` needs the charges and the kernel matrix *before* it can
+        build the exclusion screen -- the screen comes from the ground-state
+        weights, which come from a diagonal that the per-state Coulomb
+        correction is part of -- and then calls `__call__` with the screen it
+        arrived at.  Memoizing here is what keeps that from being two solves.
+        """
         pbc = np.asarray(pbc, dtype=bool)
-        vecs = pos[:, None, :] - pos[None, :, :]
-        if np.any(pbc):
-            F = vecs @ np.linalg.inv(cell)
-            vecs = vecs - (pbc * np.floor(F + 0.5)) @ cell
         atom_params = term_dict.get("atom")
         if atom_params is None:
             raise KeyError("No atom parameters set")
         indices = atom_params["atoms"][:, 0]
         params = atom_params["kwargs"]
-
-        # Both axes in term order, so the parameter vectors line up with them.
-        sub = np.ix_(indices, indices)
-        vecs = vecs[sub]
-        rij = np.sqrt(np.sum(vecs * vecs, -1))
-        kernel = self.get_kernel(pos[indices], vecs, rij, pbc, cell)
 
         # Cache on the parameters and the cell as well as the geometry: the same
         # positions with a different set of atom terms is a different problem,
@@ -219,13 +232,40 @@ class ACKS2:
         state_hash = hash(
             (pos.tobytes(), indices.tobytes(), np.asarray(cell, dtype=float).tobytes())
         )
-        if self.Q is None or state_hash != self.state_hash:
+        if self.state is None or state_hash != self.state_hash:
+            vecs = pos[:, None, :] - pos[None, :, :]
+            if np.any(pbc):
+                F = vecs @ np.linalg.inv(cell)
+                vecs = vecs - (pbc * np.floor(F + 0.5)) @ cell
+            # Both axes in term order, so the parameter vectors line up.
+            vecs = vecs[np.ix_(indices, indices)]
+            rij = np.sqrt(np.sum(vecs * vecs, -1))
+            kernel = self.get_kernel(pos[indices], vecs, rij, pbc, cell)
             self.Q, self.u, self.A = self.solve_charges(rij, params, kernel)
+            self.state = (indices, params, vecs, rij, kernel)
             self.state_hash = state_hash
+        return self.state
 
-        e_tot, f_tot, w_tot = self.compute_coulomb(self.Q, rij, vecs, kernel)
+    def charges_and_kernel(self, pos, pbc, cell, term_dict: dict):
+        """`(indices, Q, K)` in term order, with no screen and no energy.
+
+        What `EVB` reads to form each state's Coulomb exclusion correction.  The
+        charges come from the *unmasked* kernel, which is the whole point: they
+        are a function of the positions and the elements alone, so they are
+        identical on every diabatic state and no state can polarize itself by
+        being the reference.
+        """
+        indices, _, _, _, kernel = self.prepare(pos, pbc, cell, term_dict)
+        return indices, self.Q, kernel.matrix()
+
+    def __call__(
+        self, pos, pbc, cell, term_dict: dict, screen=None
+    ) -> tuple[float, np.ndarray, np.ndarray]:
+        indices, params, vecs, rij, kernel = self.prepare(pos, pbc, cell, term_dict)
+
+        e_tot, f_tot, w_tot = self.compute_coulomb(self.Q, rij, vecs, kernel, screen)
         f_resp, w_resp = self.compute_response_forces(
-            self.Q, self.u, self.A, rij, vecs, params, kernel
+            self.Q, self.u, self.A, rij, vecs, params, kernel, screen
         )
         f_tot = f_tot + f_resp
         w_tot = w_tot + w_resp

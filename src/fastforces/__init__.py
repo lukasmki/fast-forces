@@ -17,6 +17,9 @@ rxn = ff.parameterize_reaction(
     calc_factory=lambda atm: TBLite(atm),
 )
 atoms.calc = rxn.calculator(atoms)
+
+A whole dataset -- molecules, reactions and how to fit them -- is one manifest
+file, fitted by `fast-forces Water.json` or `ff.manifest.run("Water.json")`.
 """
 
 import numpy as np
@@ -28,6 +31,7 @@ from .fit import FitConfig, as_parameters, fit
 from .params import Parameters
 from .topology import enumerate_terms, perceive
 from . import coupling, evb, reaction  # noqa: E402  (needs `sampling` bound first)
+from . import manifest  # noqa: E402
 from .coupling import Coupling
 from .evb import EVB
 from .reaction import Reaction, ReactionParameters
@@ -51,6 +55,7 @@ __all__ = [
     "fit",
     "fit_from_file",
     "io",
+    "manifest",
     "parameterize",
     "parameterize_reaction",
     "perceive",

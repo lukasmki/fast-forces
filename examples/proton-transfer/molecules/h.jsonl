@@ -1,0 +1,2 @@
+{"type": "atom", "atoms": {"p0": 0}, "kwargs": {"mu": 1.879652976989746, "eta": 5.46348237991333, "soft_amp": 2.0968151092529297, "soft_decay": 0.26886698603630066}}
+{"type": "lennardjones", "atoms": {"p0": 0}, "kwargs": {"sigma": 0.0, "eps": 0.0}}

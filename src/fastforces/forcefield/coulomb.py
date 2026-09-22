@@ -30,9 +30,9 @@ is the same future work `elements.py` records for the ACKS2 softness.
 one that settles it:
 
   * Bare `1/r` between fixed charges at a bond length is tens of eV with a
-    matching gradient, and nothing in this force field is set up to absorb that
-    -- `ZBL` and `LennardJones` take no exclusions, so the bonded pairs are
-    already carrying two unscreened nonbonded terms apiece.
+    matching gradient, and it would be the one term whose exclusion is a screen
+    rather than a subtraction -- so the pairs just outside `EXCLUSION_DEPTH`,
+    which nothing cancels, would carry all of it.
   * `export.openmm` already bakes frozen charges into `erf(beta*r)/r` with
     `beta = 2.0`, so this is the form the exported system has always had.  A
     term using a different kernel would export to something that is not itself.
@@ -41,27 +41,26 @@ one that settles it:
     `tests/test_forcefield.py` already checks against finite differences, not a
     second implementation to keep in step.
 
-**Charge neutrality is the caller's problem.**  `ewald` omits the `k = 0`
-reciprocal term, which is only legitimate when `sum_i q_i = 0` -- see its module
-docstring.  `ACKS2` imposes that as a hard constraint; this term carries
-whatever it is handed.  Mulliken charges sum to the total molecular charge by
-construction, so a neutral molecule satisfies it exactly and an ion does not, and
-a periodic evaluation of an ion is missing the neutralizing background.  That is
-warned about once per evaluator rather than raised: an isolated ion is a
-perfectly ordinary thing to evaluate under open boundaries, where the `k = 0`
-term does not exist at all.
-"""
+**Charge neutrality is not this term's problem.**  `ewald` omits the `k = 0`
+reciprocal term but restores its neutralizing background explicitly, so a
+periodic sum over a charged cell is the standard one against a uniform
+compensating background rather than a number with a piece missing.  `ACKS2`
+imposes neutrality as a hard constraint and never needed it; this term carries
+whatever charges it is handed -- Mulliken populations sum to the total molecular
+charge, so a neutral molecule is neutral exactly and an ion is not -- and is
+well defined either way.
 
-import warnings
+**Exclusions reach this term through the screen, not through the charges.**
+Fixed charges could in principle be excluded by simply subtracting the excluded
+pairs, since there is no solve to disturb.  They are not: `forcefield/
+exclusions.py` screens the contraction for both electrostatic terms, so the two
+are excluded by the same code against the same mask and a field cannot acquire a
+different exclusion convention by choosing its electrostatics.
+"""
 
 import numpy as np
 
 from .ewald import CCOUL, KernelCache, coulomb_sum
-
-# Net charge, in e, above which a periodic evaluation is worth complaining
-# about.  Loose enough that float error in a set of charges that is meant to
-# sum to zero never trips it, tight enough that a real +1 does.
-NEUTRALITY_TOL = 1e-6
 
 
 class Coulomb:
@@ -86,25 +85,16 @@ class Coulomb:
     def __init__(self):
         self.Q = None
         self.kernels = KernelCache()
-        self._warned = False
 
-    def _check_neutrality(self, Q, pbc):
-        """Warn once if a periodic sum is being asked for on a charged system."""
-        if self._warned or not np.all(pbc):
-            return
-        net = float(np.sum(Q))
-        if abs(net) > NEUTRALITY_TOL:
-            warnings.warn(
-                f"periodic Coulomb sum with a net charge of {net:+.4f} e: the "
-                "Ewald k=0 term is omitted, so the energy is missing the "
-                "neutralizing background (see forcefield/ewald.py)",
-                stacklevel=3,
-            )
-            self._warned = True
+    def prepare(self, pos, pbc, cell, term_dict: dict):
+        """`(indices, Q, vecs, rij, kernel)` in term order.
 
-    def __call__(
-        self, pos: np.ndarray, pbc: np.ndarray, cell: np.ndarray, term_dict: dict
-    ) -> tuple[float, np.ndarray, np.ndarray]:
+        The counterpart of `ACKS2.prepare`, and the reason both terms can be
+        driven by the same caller: `EVB` asks for the charges and the kernel,
+        builds the exclusion screen from them, and calls `__call__` with it.
+        There is nothing to memoize here -- the charges are parameters, not a
+        solve -- so this is only the geometry work.
+        """
         pbc = np.asarray(pbc, dtype=bool)
         params = term_dict.get("coulomb")
         if params is None:
@@ -118,13 +108,26 @@ class Coulomb:
             vecs = vecs - (pbc * np.floor(F + 0.5)) @ cell
 
         # Both axes in term order, so the charge vector lines up with them.
-        sub = np.ix_(indices, indices)
-        vecs = vecs[sub]
+        vecs = vecs[np.ix_(indices, indices)]
         rij = np.sqrt(np.sum(vecs * vecs, -1))
-
-        self._check_neutrality(Q, pbc)
         kernel = self.kernels.get(pos[indices], vecs, rij, pbc, cell)
-        e_tot, f_tot, w_tot = coulomb_sum(Q, kernel, self.CCOUL)
+        return indices, Q, vecs, rij, kernel
+
+    def charges_and_kernel(self, pos, pbc, cell, term_dict: dict):
+        """`(indices, Q, K)` in term order, matching `ACKS2.charges_and_kernel`."""
+        indices, Q, _, _, kernel = self.prepare(pos, pbc, cell, term_dict)
+        return indices, Q, kernel.matrix()
+
+    def __call__(
+        self,
+        pos: np.ndarray,
+        pbc: np.ndarray,
+        cell: np.ndarray,
+        term_dict: dict,
+        screen=None,
+    ) -> tuple[float, np.ndarray, np.ndarray]:
+        indices, Q, vecs, rij, kernel = self.prepare(pos, pbc, cell, term_dict)
+        e_tot, f_tot, w_tot = coulomb_sum(Q, kernel, self.CCOUL, screen)
 
         # Published the way `ACKS2.Q` is, so the calculator can report charges
         # from either term without knowing which one it has.

@@ -8,6 +8,7 @@ alone.
 """
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -16,8 +17,10 @@ from ase.io import read
 
 from fastforces import coupling as C
 
-REFERENCE_XYZ = "quickstart/output/h3o-h2o-transfer.xyz"
-REFERENCE_JSONL = "quickstart/output/h3o-h2o-transfer.jsonl"
+# The H3O+/H2O proton transfer: three geometries and the fit made from them
+# elsewhere.  Paths hang off `__file__` so the suite runs from any directory.
+REFERENCE_XYZ = str(Path(__file__).parent / "h3o-h2o-transfer.xyz")
+REFERENCE_JSONL = str(Path(__file__).parent / "h3o-h2o-transfer.jsonl")
 
 # Donor, transferring proton, acceptor, in the reference file's atom order.
 TRIPLE = (0, 1, 4)

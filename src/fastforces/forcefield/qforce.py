@@ -1,4 +1,5 @@
 import numpy as np
+from ase import units
 from typing import Callable
 
 # Default decay rate of the Morse shape term, `c * s**3 * exp(-b * s)`, used for
@@ -39,6 +40,65 @@ from typing import Callable
 SHAPE_DECAY: float = 4.0
 
 
+# How far above zero the Morse dissociation limit sits, in eV.  The well depth
+# on the stretched branch is `D + BOND_ASYMPTOTE` while the offset that places
+# the minimum stays `-D`, so the minimum is unmoved and the dissociated limit
+# rises by exactly this much.
+#
+# **Why a dissociated fragment pair must not sit at zero.**  `coupling.fit`
+# inverts the 2x2 secular equation at a reference transition state, and the
+# inversion `A = -sqrt((Hm - E*)**2 - dH**2)` has a real root only where the
+# reference barrier lies below *both* diabats.  A plain Morse hands the product
+# diabat a flat zero the moment its new bond is long, which is frequently above
+# the reference barrier, and the channel cannot be fitted at all.  Lifting the
+# asymptote lifts every dissociated diabat by the same amount and buys the
+# margin back.  Refitting the whole pipeline at each candidate value, against
+# the number of channels `coupling.fit` can invert and the margins of the three
+# that decide it:
+#
+#     asymptote   fittable   rxn_16    rxn_11    rxn_15
+#       0.00        14        -0.402    +0.086    +0.144
+#       0.50        15        -0.152    +0.426    +0.416
+#       0.75        15        -0.028    +0.591    +0.549
+#       1.00        16        +0.093    +0.753    +0.680
+#       1.50        16        +0.333    +1.068    +0.938
+#       2.00        16        +0.567    +1.371    +1.190
+#
+# 1.0 eV is the first value at which rxn_16 -- a genuine saddle, and the one
+# channel that was ever a fitting *failure* rather than a barrierless one --
+# becomes fittable, and beyond 1.5 nothing further is gained.
+#
+# It also sets where a bonded diabat crosses its own fragments', which is where
+# a fission channel's coupling is centred and therefore where the reverse
+# channel has to be available:
+#
+#     asymptote      H2        HO       H2O
+#       0.75       2.53 A    3.15 A    4.05 A
+#       1.00       2.38 A    2.93 A    3.74 A
+#
+# Like every other global in `forcefield`, this is a property of the dataset
+# rather than a universal constant: it enters `E_bonded`, which the bond depths
+# are fitted against, so changing it invalidates every fitted `.jsonl`.
+BOND_ASYMPTOTE: float = 1.0
+
+
+# Lower floors on the two clamped cross terms, in eV.
+#
+# **Stated in kJ/mol and converted here**, because -10 and -20 are q-force's own
+# numbers in q-force's own units -- they appear bare in the example XML, which
+# OpenMM reads as kJ/mol, and a parameter set fitted against that file means
+# them that way.  Read as eV they are a factor of 96.5 looser, which is a floor
+# that never engages rather than one that bounds anything.
+#
+# The floor exists because both terms are products of two independent
+# displacements and are unbounded below: a bond stretched while an angle closes
+# drives `k dr dc` arbitrarily negative, and nothing else in the bonded set
+# opposes it.  The gradient vanishes where the clip is active, so a geometry
+# that has run into the floor is not pushed further into it.
+CLIP_BONDBOND: float = -10.0 * units.kJ / units.mol
+CLIP_BONDANGLE: float = -20.0 * units.kJ / units.mol
+
+
 class QForce:
     """Bonded force field, in ASE units (eV, Angstrom) throughout.
 
@@ -49,13 +109,14 @@ class QForce:
     the per-term `compute_*` methods be called directly -- by `fit`, and by the
     tests -- without a caller having to know which unit system it is in.
 
-    One consequence worth naming: the `-10` and `-20` clamps in
-    `compute_bondbond` and `compute_bondangle` are eV, which is what
-    `export.openmm.CLIP_BONDBOND` already converts them as.
+    The one place a number is not simply in those units is the two cross-term
+    floors, `CLIP_BONDBOND` and `CLIP_BONDANGLE`.  They are stated in kJ/mol,
+    which is the unit q-force wrote them in, and converted here once -- see
+    their own comment.
 
     `bond_form` selects the bond functional form:
 
-      "morse"      D*(1 - exp(-a*dr))**2 - D,  a = sqrt(k/2D)
+      "morse"      Dw*(1 - exp(-a*dr))**2 - D,  a = sqrt(k/2Dw)
       "harmonic"   0.5*k*dr**2
 
     Morse is the default and is required for reactive work.  It is bounded
@@ -137,12 +198,22 @@ class QForce:
     def _bond_morse(self, vecs, atoms, D, r0, k, c=0.0, b=SHAPE_DECAY):
         """Morse with a one-sided Hulburt-Hirschfelder shape term.
 
-            s = a*max(dr, 0),  a = sqrt(k / 2D)
-            E = D * [ (1 - exp(-a*dr))**2 - 1 + c * s**3 * exp(-b*s) ]
+            Dw = D + BOND_ASYMPTOTE  if dr > 0 else D
+            s  = a*max(dr, 0),  a = sqrt(k / 2Dw)
+            E  = Dw * [ (1 - exp(-a*dr))**2 + c * s**3 * exp(-b*s) ] - D
 
-        The `-D` offset puts the dissociated limit at zero, so a topology's
-        energy carries the depth of the bonds it contains and breaking a bond
-        costs `+D` rather than nothing.
+        The `-D` offset puts the minimum at `-D`, so a topology's energy
+        carries the depth of the bonds it contains and breaking a bond costs
+        `+D` rather than nothing.
+
+        **The two branches carry different well depths.**  The stretched one is
+        `D + BOND_ASYMPTOTE`, which lifts the dissociated limit to
+        `BOND_ASYMPTOTE` above zero while leaving the minimum at `-D` exactly
+        where it was -- see `BOND_ASYMPTOTE` for the margins that buys
+        `coupling.fit`.  The join at `dr = 0` is still C2: the curvature there
+        is `2 Dw a**2 = k` for either value of `Dw`, so no fitted frequency
+        sees it, and value and slope agree trivially because both branches read
+        `-D` and zero there.
 
         **Why the third parameter exists.**  Plain Morse (`c = 0`) is exact at
         the minimum and at dissociation and has nothing left over in between:
@@ -187,19 +258,24 @@ class QForce:
         v = vecs[atoms[:, 1], atoms[:, 0]]  # (n, 3)  vec from atom0->atom1
         r = np.sqrt(np.sum(v * v, -1))  # (n,)
         dr = r - r0
-        al = np.sqrt(k / (2 * D))  # (n,)  1/Angstrom
+
+        # The stretched branch is the deeper well; the offset that places the
+        # minimum stays `-D` either way, which is what lifts the dissociated
+        # limit to `BOND_ASYMPTOTE` and leaves the minimum where it was.
+        Dw = np.where(dr > 0.0, D + BOND_ASYMPTOTE, D)  # (n,)  eV
+        al = np.sqrt(k / (2 * Dw))  # (n,)  1/Angstrom
         exp_term = np.exp(-al * dr)  # (n,)
-        e = D * (1 - exp_term) ** 2 - D
-        # dE/dr  =  2*D*(1 - exp)*al*exp
-        de_dr = 2 * D * (1 - exp_term) * al * exp_term  # (n,)
+        e = Dw * (1 - exp_term) ** 2 - D
+        # dE/dr  =  2*Dw*(1 - exp)*al*exp
+        de_dr = 2 * Dw * (1 - exp_term) * al * exp_term  # (n,)
 
         # Stretched branch only; `np.maximum` rather than a mask so that the
         # zero-`c` case stays a single vectorised expression.
         s = al * np.maximum(dr, 0.0)  # (n,)
         decay = np.exp(-b * s)
-        e = e + D * c * s * s * s * decay
+        e = e + Dw * c * s * s * s * decay
         # d/ds [s**3 exp(-b s)] = (3 s**2 - b s**3) exp(-b s),  ds/dr = al (or 0)
-        de_dr = de_dr + D * c * al * s * s * (3.0 - b * s) * decay
+        de_dr = de_dr + Dw * c * al * s * s * (3.0 - b * s) * decay
 
         e_tot = np.sum(e)
         # dr/dv = v/r,  v = pos_atom1 - pos_atom0
@@ -246,55 +322,6 @@ class QForce:
         # shift moves no atom and stores no stress.
         return np.sum(E0), np.zeros((vecs.shape[0], 3)), np.zeros((3, 3))
 
-    def compute_exclusion(self, vecs, atoms, sigma, eps):
-        """Cancels the global Lennard-Jones term between near neighbours.
-
-        **Dormant.**  The repulsion is `forcefield/zbl.py`, which has no
-        exclusions, and `ReactionSet.load` no longer derives `exclusion` terms --
-        so nothing in the calculator reaches this method.  It is kept because
-        `lj.with_exclusions` still builds those terms on demand, for the tests
-        that check the Lennard-Jones decomposition still holds, and because a
-        dataset shipping explicit `exclusion` terms would still be honoured.
-
-        `forcefield/lj.py` sums 12-6 over *every* pair in the system, including
-        pairs that are bonded to each other, because that sum is the same for
-        every diabatic state and can therefore be evaluated once outside the EVB.
-        What is topology-dependent is which pairs should not have been counted,
-        and that is the pairs within `lj.EXCLUSION_DEPTH` bonds of each other --
-        a per-molecule quantity, which is what makes it expressible as a term.
-
-        The functional form must match `LennardJones` exactly, combining rule
-        included, or an isolated template stops reproducing its own energy.
-        `sigma` and `eps` are therefore the already-combined pair values, worked
-        out once when the template is loaded rather than twice from different
-        code -- and the form itself comes from `lj.pair_potential` for the same
-        reason.  It was open-coded here once, and the copy silently stopped
-        matching the moment `pair_potential` gained its short-range linear
-        continuation: the two halves of the cancellation disagreed by 1609 eV on
-        an H2 template.
-        """
-        from .lj import pair_potential
-
-        v = vecs[atoms[:, 1], atoms[:, 0]]  # (n, 3)  vec from atom0->atom1
-        r = np.sqrt(np.sum(v * v, -1))  # (n,)
-        # In Angstrom, like everything else in this class -- which is what
-        # `pair_potential` requires, since `lj.switch` fixes its length unit,
-        # and what makes this half of the cancellation the same function of the
-        # same numbers as the other half.
-        u, du_dr = pair_potential(r, sigma, eps)
-        e_tot = -np.sum(u)
-
-        # e = -u, so de_dr = -du/dr
-        de_dr = -du_dr
-        dv = (de_dr / r)[:, None] * v  # (n, 3)
-
-        n_atoms = vecs.shape[0]
-        f = np.zeros((n_atoms, 3))
-        # F = -dE/d(pos)
-        np.add.at(f, atoms[:, 0], dv)
-        np.add.at(f, atoms[:, 1], -dv)
-        return e_tot, f, self._virial((v, dv))
-
     def compute_angle(self, vecs, atoms, theta0, k):
         """`E = 0.5*k*(cos(theta) - cos(theta0))**2`.
 
@@ -340,11 +367,11 @@ class QForce:
         r1 = np.sqrt(np.sum(v1 * v1, -1))  # (n,)
         r2 = np.sqrt(np.sum(v2 * v2, -1))
         raw = k * (r1 - r1_0) * (r2 - r2_0)
-        e = np.clip(raw, -10, None)
+        e = np.clip(raw, CLIP_BONDBOND, None)
         e_tot = np.sum(e)
 
         # gradient only where not clipped
-        mask = (raw > -10).astype(float)[:, None]
+        mask = (raw > CLIP_BONDBOND).astype(float)[:, None]
         # dE/d(r1) = k*(r2-r2_0),  dE/d(r2) = k*(r1-r1_0)
         dE_dr1 = (k * (r2 - r2_0))[:, None] * mask  # (n,1)
         dE_dr2 = (k * (r1 - r1_0))[:, None] * mask
@@ -378,10 +405,10 @@ class QForce:
         dr = rc - r0
 
         raw = k * dr * dcos
-        e = np.clip(raw, -20, None)
+        e = np.clip(raw, CLIP_BONDANGLE, None)
         e_tot = np.sum(e)
 
-        mask = (raw > -20).astype(float)[:, None]
+        mask = (raw > CLIP_BONDANGLE).astype(float)[:, None]
 
         # dE/d(cos) = k * dr
         dE_dcos = (k * dr)[:, None] * mask

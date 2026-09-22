@@ -75,6 +75,43 @@ raises rather than fitting a coupling to a path that does not exist. Supply the
 three frames yourself and call `coupling.fit_threebody` directly when the path
 has to be constrained.
 
+## Datasets from a manifest
+
+A whole dataset of molecules and reactions is described by one JSON manifest --
+see [`examples/proton-transfer/Water.json`](examples/proton-transfer/Water.json)
+-- and fitted in one command:
+
+```bash
+fast-forces examples/proton-transfer/Water.json --dry-run   # validate, show the plan
+fast-forces examples/proton-transfer/Water.json
+```
+
+Each entry's `path` is an output stem relative to the manifest: a molecule
+writes `<path>.jsonl` and `<path>.xyz`, a reaction `<path>.xyz`, `<path>.jsonl`
+and one jsonl per diabatic state. The `fit_config` section takes any `FitConfig`
+field plus:
+
+| key | default | meaning |
+| --- | --- | --- |
+| `calculator` | `{"name": "tblite"}` | `tblite` (`method`) or `pyscf` (`xc`, `basis`, and `pcm`/`pcm_eps` for implicit solvent, e.g. `"IEF-PCM"`); other keys go to the constructor |
+| `workdir` | `"training"` | where the full training sets go, mirroring each `path` |
+| `embed_seed` | 42 | seed for conformer embedding and the saddle guess |
+| `eps` | 1e-3 | coupling quench at the nearer endpoint |
+
+Reaction SMILES need not be atom-mapped: heavy atoms correspond by order of
+appearance and hydrogens are assigned to change as few bonds as possible
+(`reaction.map_atoms`), so `[OH3+].O>>O.[OH3+]` is the Grotthuss transfer.
+Molecules are fitted first and reactions reuse them as fragments. A reaction
+entry may give `"frames"` -- reactant, TS and product in one extxyz -- to skip
+the saddle search, which is what a barrierless gas-phase channel needs, and
+`"amplitude"` to fix the coupling amplitude. A molecule entry may give `"spin"`
+(`2S`); otherwise it is read from the SMILES radicals.
+
+Training sets already in `workdir` are reused, so a rerun refits without the
+reference calculator; delete one to regenerate it. `global_params` is checked
+against the constants the package evaluates at and refused if it differs --
+those are not fit settings (REFERENCE.md §7.2).
+
 ## Examples
 
 Numbered, runnable examples live in [`quickstart/`](quickstart/) -- start with

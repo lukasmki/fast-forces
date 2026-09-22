@@ -31,26 +31,33 @@ and the two real-space pieces merge:
     K_ij = sum_n' [erf(GAMMA |r_ij + n|) - erf(kappa |r_ij + n|)] / |r_ij + n|
          + (4 pi / V) sum_{k != 0} exp(-k^2 / 4 kappa^2) / k^2 * cos(k . r_ij)
          - delta_ij * 2 kappa / sqrt(pi)
+         + background,          background = -pi / (kappa^2 V)
 
 The prime excludes `n = 0` when `i == j`: an atom does not interact with itself,
 but it *does* interact with its own images, and that is the diagonal `K_ii`
 below -- a term with no counterpart in the open-boundary kernel, carried on the
 diagonal of the ACKS2 matrix alongside the atomic hardness.
 
-**Charge neutrality is assumed, not enforced here.**  The `k = 0` term of the
-reciprocal sum is the divergent one; regularizing it against a neutralizing
-background leaves a constant `-pi / (V kappa^2)` in every entry of `K`.  Adding
-any constant to every entry of `K` changes the energy by that constant times
-`(sum_i q_i)^2` and the ACKS2 rows by that constant times `sum_i q_i`, so with
-`sum_i q_i = 0` it drops out of the energy, the forces, the virial and the
-solved charges alike.  It is therefore omitted.  A charged system would need it
-back, and would need a physical justification for what the compensating
-background is.
+**The `k = 0` term is omitted and its neutralizing background restored
+explicitly.**  The `k = 0` term of the reciprocal sum is the divergent one;
+regularizing it against a neutralizing background leaves the constant
+`-pi / (kappa^2 V)` in every entry of `K`, and that constant is what
+`Ewald.background` carries.
 
-`ACKS2.build_system` imposes that neutrality as a hard constraint, so it holds
-there by construction.  `Coulomb` carries whatever charges it is handed and
-cannot, so it warns when it is asked for a periodic energy with a net charge --
-see its module docstring.
+Omitting it without restoring it -- which is what this module used to do -- is
+legal only for a charge-neutral *contraction*: adding a constant to every entry
+of `K` changes `sum_ij W_ij K_ij` by that constant times `sum_ij W_ij`, which
+vanishes for `W = q q^T` when `sum_i q_i = 0`.  The exclusion screen of
+`forcefield/exclusions.py` breaks exactly that condition.  It contracts `K`
+against `S * q q^T` and against a bare pair mask, neither of which sums to
+zero, so each individual `K_ij` has to be well defined on its own and the
+background cannot be left out.  Restoring it also makes a *charged* periodic
+system meaningful rather than merely unflagged: the energy is then the standard
+one against a uniform neutralizing background, which is the only thing a
+periodic sum over a charged cell can mean.
+
+`ACKS2.build_system` still imposes neutrality as a hard constraint, so for it
+the background changes nothing it did not already get right.
 
 **Only the Coulomb block is summed over images.**  ACKS2's other
 geometry-dependent block, the bond softness, decays as `exp(-r / tau)` with
@@ -122,8 +129,8 @@ def contract_pairs(coeff, vecs, r):
     return dS_dr, dS_de
 
 
-def coulomb_sum(Q, kernel, ccoul=CCOUL):
-    """`E = ccoul/2 * Q.K.Q` and its gradients, at fixed `Q`.
+def coulomb_sum(Q, kernel, ccoul=CCOUL, screen=None):
+    """`E = ccoul/2 * sum_ij S_ij Q_i Q_j K_ij` and its gradients, at fixed `Q`.
 
     Shared by both electrostatic terms, which differ only in where `Q` comes
     from: `ACKS2` solves for it and then adds the `dQ/dr` response on top,
@@ -137,8 +144,17 @@ def coulomb_sum(Q, kernel, ccoul=CCOUL):
     `dS/de` for that same sum.  The diagonal is not masked off -- `K_ii` is
     zero under open boundaries and is a real self-image interaction under
     periodic ones.
+
+    `screen` is the exclusion weight `S` of `forcefield/exclusions.py`, or
+    `None` for the unscreened sum.  It multiplies into `W` and is then held
+    fixed: it is built from the EVB weights, which Hellmann-Feynman says not to
+    differentiate.  Note that a screened `W` no longer sums to zero over a
+    neutral system, which is why `Ewald` carries its `k = 0` background
+    explicitly rather than dropping it.
     """
     W = 0.5 * ccoul * (Q[:, None] * Q[None, :])
+    if screen is not None:
+        W = W * screen
     energy = float(np.sum(W * kernel.matrix()))
     dS_dr, dS_de = kernel.contract(W)
     # The force is minus the gradient; the virial is `dE/de_ab` as it stands,
@@ -237,6 +253,14 @@ class Ewald:
         # reciprocal sum includes and which is not a real interaction.
         self.self_term = -2 * self.kappa / np.sqrt(np.pi)
 
+        # The neutralizing background left behind by regularizing the omitted
+        # `k = 0` term: a constant in every entry of `K`.  It cancels out of any
+        # charge-neutral contraction and does not cancel out of a screened one,
+        # which is why it is carried rather than dropped -- see the module
+        # docstring.  It depends on the cell only through `1 / V`, so its strain
+        # derivative is the same `-delta_ab` form the reciprocal prefactor has.
+        self.background = -np.pi / (self.kappa**2 * self.volume)
+
     def bind(self, pos, vecs, rij):
         return EwaldKernel(self, pos, vecs, rij)
 
@@ -276,6 +300,7 @@ class EwaldKernel:
             weighted_cos = self.cos * setup.weight
             weighted_sin = self.sin * setup.weight
             K = short + weighted_cos @ self.cos.T + weighted_sin @ self.sin.T
+            K += setup.background
             K[np.diag_indices_from(K)] += setup.self_term
             self._matrix = K
         return self._matrix
@@ -315,6 +340,11 @@ class EwaldKernel:
             + np.einsum("k,ka,kb->ab", coeff, setup.kvecs, setup.kvecs)
             - np.eye(3) * Sk.sum()
         )
+
+        # The background is a constant in `K`, so it contributes `background *
+        # sum(W)` to `S` -- nothing to the force, and to the virial only through
+        # its own `1 / V`, exactly as the reciprocal prefactor does one line up.
+        dS_de = dS_de - np.eye(3) * (setup.background * float(np.sum(W)))
         return dS_dr, dS_de
 
 

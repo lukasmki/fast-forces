@@ -17,7 +17,7 @@ import pytest
 from fastforces.forcefield.acks2 import ACKS2
 from fastforces.forcefield.coulomb import Coulomb
 from fastforces.forcefield.lj import CORE_FRACTION, LennardJones
-from fastforces.forcefield.qforce import QForce
+from fastforces.forcefield.qforce import BOND_ASYMPTOTE, QForce
 from fastforces.forcefield.zbl import ZBL
 
 PBC = np.zeros(3, dtype=bool)
@@ -276,24 +276,82 @@ def test_coulomb_skips_atoms_with_no_term(random_positions):
     assert energy == pytest.approx(alone)
 
 
-def test_coulomb_warns_once_on_a_charged_periodic_system(random_positions):
-    """The Ewald `k = 0` term is omitted, which needs `sum q = 0`."""
+def test_periodic_kernel_carries_the_neutralizing_background(random_positions):
+    """`K_ij` includes `-pi / (kappa^2 V)` in every entry, diagonal included.
+
+    Omitting it is legal only for a charge-neutral contraction, and the
+    exclusion screen is not one -- it contracts the kernel against `S * q q^T`
+    and against a bare pair mask, neither of which sums to zero.  So the
+    constant has to be in `K` itself, not assumed away.
+
+    Checked by rebuilding the kernel at a second, larger cell: the background is
+    the only piece that scales as `1 / V` with nothing else in it, so the
+    difference between the two isolates it against the analytic expression.
+    """
+    from fastforces.forcefield.ewald import Ewald
+
+    vecs = random_positions[:, None, :] - random_positions[None, :, :]
+    rij = np.sqrt(np.sum(vecs * vecs, -1))
+    setup = Ewald(STRAIN_CELL)
+
+    assert setup.background == pytest.approx(-np.pi / (setup.kappa**2 * setup.volume))
+    assert setup.background < 0.0
+
+    # Strip it back out and the kernel is the one the neutral tests pin: a
+    # neutral contraction is untouched, a charged one moves by exactly the
+    # constant times the square of the net charge.
+    K = setup.bind(random_positions, vecs, rij).matrix()
+    bare = K - setup.background
+    ones = np.ones(len(random_positions))
+    assert float(CHARGES @ bare @ CHARGES) == pytest.approx(
+        float(CHARGES @ K @ CHARGES)
+    )
+    assert float(ones @ K @ ones) - float(ones @ bare @ ones) == pytest.approx(
+        setup.background * len(ones) ** 2
+    )
+
+
+def test_coulomb_is_defined_for_a_charged_periodic_system(random_positions):
+    """No warning, and a virial that still matches finite differences.
+
+    The background depends on the cell through `1 / V`, so a charged cell is
+    exactly where a missing or mis-signed strain derivative of it would show --
+    its contribution is `ccoul/2 * background * (sum q)^2`, which is identically
+    zero for the neutral case every other test here uses.
+    """
     charged = CHARGES + 1.0 / len(CHARGES)
-    coulomb = Coulomb()
     terms = _coulomb_terms(charged)
-    with pytest.warns(UserWarning, match="net charge"):
-        coulomb(random_positions, STRAIN_PBC, STRAIN_CELL, terms)
-    # once per evaluator, not once per step of an MD run
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        coulomb(random_positions, STRAIN_PBC, STRAIN_CELL, terms)
+        analytic = Coulomb()(random_positions, STRAIN_PBC, STRAIN_CELL, terms)[2]
+    numeric = _numeric_virial(
+        lambda p, c: Coulomb()(p, STRAIN_PBC, c, terms)[0], random_positions
+    )
+    assert np.allclose(analytic, numeric, rtol=1e-5, atol=1e-8)
 
 
-def test_coulomb_does_not_warn_under_open_boundaries(random_positions):
-    """An isolated ion is an ordinary thing to evaluate; there is no `k = 0`."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        Coulomb()(random_positions, PBC, CELL, _coulomb_terms(CHARGES + 0.125))
+def test_a_net_charge_costs_exactly_the_background(random_positions):
+    """`E(q) - E_bare(q)` is `ccoul/2 * background * (sum q)^2`, and nothing else.
+
+    The energy the evaluator returns against the same contraction taken on a
+    kernel with the background stripped out: the neutral set agrees to rounding,
+    the charged one differs by the analytic constant.
+    """
+    from fastforces.forcefield.ewald import CCOUL, Ewald
+
+    vecs = random_positions[:, None, :] - random_positions[None, :, :]
+    rij = np.sqrt(np.sum(vecs * vecs, -1))
+    setup = Ewald(STRAIN_CELL)
+    bare = setup.bind(random_positions, vecs, rij).matrix() - setup.background
+
+    charged = CHARGES + 1.0 / len(CHARGES)
+    for q in (CHARGES, charged):
+        energy = Coulomb()(random_positions, STRAIN_PBC, STRAIN_CELL, _coulomb_terms(q))[
+            0
+        ]
+        net = float(np.sum(q))
+        expected = 0.5 * CCOUL * (float(q @ bare @ q) + setup.background * net**2)
+        assert energy == pytest.approx(expected)
 
 
 def test_angle_convention(random_positions):
@@ -403,6 +461,71 @@ def test_morse_bond_is_not_linear_in_k(random_positions):
         random_positions, PBC, CELL, _term_dict("bond", indices, dict(kwargs, k=scale))
     )[0]
     assert e_scaled != pytest.approx(scale * e_unit)
+
+
+def _morse_energy(r, **overrides):
+    """One Morse bond at separation `r`, through `compute_bond`."""
+    kwargs = {
+        name: np.array([v])
+        for name, v in dict(
+            {"D": 4.0, "r0": 1.1, "k": 30.0, "c": 0.0}, **overrides
+        ).items()
+    }
+    pos = np.array([[0.0, 0.0, 0.0], [r, 0.0, 0.0]])
+    vecs = pos[:, None, :] - pos[None, :, :]
+    return QForce().compute_bond(vecs, np.array([[0, 1]]), **kwargs)[0]
+
+
+def test_morse_dissociates_to_the_asymptote_and_bottoms_at_minus_D():
+    """The stretched branch is `D + BOND_ASYMPTOTE` deep, the offset still `-D`.
+
+    Two things at once, and they are the point of the one-sided well: the
+    minimum has to stay exactly where a plain Morse put it, so that `D` remains
+    the atomization depth the fit reads it as, while the dissociated limit has
+    to come out above zero, so that `coupling.fit_amplitude` has a reference
+    barrier below both diabats to invert.
+    """
+    assert _morse_energy(1.1) == pytest.approx(-4.0)
+    assert _morse_energy(60.0) == pytest.approx(BOND_ASYMPTOTE, abs=1e-9)
+
+
+def test_morse_is_smooth_across_the_branch():
+    """The two wells join C2 at `r0`, so no fitted frequency sees the seam.
+
+    The curvature is `2 Dw a**2 = k` for either value of `Dw`, which is what
+    makes the join invisible -- the branch below is checked against the one
+    above, and both against `k`.
+    """
+    r0, k, step = 1.1, 30.0, 1e-4
+    below = (
+        _morse_energy(r0 - step) - 2 * _morse_energy(r0 - 2 * step)
+        + _morse_energy(r0 - 3 * step)
+    ) / step**2
+    above = (
+        _morse_energy(r0 + 3 * step) - 2 * _morse_energy(r0 + 2 * step)
+        + _morse_energy(r0 + step)
+    ) / step**2
+    assert below == pytest.approx(k, rel=1e-2)
+    assert above == pytest.approx(k, rel=1e-2)
+    # value and slope agree trivially; it is the second derivative that could
+    # have been discontinuous and is not.
+    assert below == pytest.approx(above, rel=1e-2)
+
+
+def test_the_shape_term_scales_with_the_branch_well_depth():
+    """`c` multiplies `Dw`, not `D`, so it rides the deeper stretched well.
+
+    Stated as a test because it is the one place the asymptote reaches a term
+    other than the exponential: getting it wrong leaves the shape correction
+    scaled to the wrong depth and shows up only as a bad dissociation curve.
+    """
+    r = 1.6
+    plain = _morse_energy(r, c=0.0)
+    shaped = _morse_energy(r, c=0.5)
+    al = np.sqrt(30.0 / (2.0 * (4.0 + BOND_ASYMPTOTE)))
+    sval = al * (r - 1.1)
+    expected = (4.0 + BOND_ASYMPTOTE) * 0.5 * sval**3 * np.exp(-4.0 * sval)
+    assert shaped - plain == pytest.approx(expected)
 
 
 def test_bond_forms_share_curvature_at_r0():

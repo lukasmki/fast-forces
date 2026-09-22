@@ -5,7 +5,7 @@ from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 from ase.stress import full_3x3_to_voigt_6_stress
 
-from .forcefield import electrostatic_evaluator
+from .forcefield import electrostatic_evaluator, exclusions
 from .forcefield.lj import LennardJones
 from .forcefield.qforce import QForce
 from .forcefield.zbl import ZBL
@@ -25,12 +25,20 @@ class FastForces(Calculator):
     carried as fitted parameters.  `Parameters.electrostatics` picks between
     them and rejects a field carrying both.
 
-    The last two are the ones with no topology at all: neither takes exclusions,
-    so both are evaluated over every pair including bonded ones.  They hand over
-    to each other rather than overlapping -- `zbl.taper` switches ZBL off at
-    1.5 A and `lj.switch` switches the 12-6 on at 2.2 A -- and what they
-    contribute at a bond length is absorbed by the fitted Morse depths, which is
-    why `fit` pre-compresses `r0`.
+    All three nonbonded sums run over every pair with no reference to the bond
+    graph, and `forcefield/exclusions.py` then takes the near-neighbour part
+    back off: `-u_ZBL` and `-u_126` additively, and the Coulomb contraction
+    through a 0/1 screen.  ZBL and the 12-6 hand over to each other rather than
+    overlapping -- `zbl.taper` switches ZBL off at 1.5 A and `lj.switch`
+    switches the 12-6 on at 2.2 A -- and whatever survives the exclusion at a
+    bond length is absorbed by the fitted Morse depths and by `r0`, which `fit`
+    therefore fits rather than reading off the geometry.
+
+    The exclusion mask is `params.exclusions`, the 1-2/1-3/1-4 matrix of the
+    topology this field was built on.  A field carrying none -- which is a
+    `Parameters` assembled by hand, since both `fit` and `from_rows` derive one
+    -- is evaluated with every pair summed, and will not reproduce its own
+    reference energy.
 
     All four read `params.terms` as it stands -- eV and Angstrom, the units the
     fit works in -- so nothing is converted anywhere in the evaluation path.
@@ -62,6 +70,22 @@ class FastForces(Calculator):
         self.electrostatic = electrostatic_evaluator(params)
         self._bonded = params.bonded_terms()
 
+    def _screen(self, terms, mask):
+        """The Coulomb screen for one state: `1 - M`, in term order.
+
+        `None` when there is nothing to screen -- no exclusion mask, no
+        electrostatics, or `EXCLUDE_COULOMB` turned off -- which the evaluators
+        read as the unscreened contraction.  With one state the screen is a
+        plain 0/1 matrix; the fractional case belongs to `EVB`, where the masks
+        of several states are mixed by their ground-state weights.
+        """
+        if mask is None or self.electrostatic is None:
+            return None
+        if not exclusions.EXCLUDE_COULOMB:
+            return None
+        indices = terms[self.electrostatics]["atoms"][:, 0]
+        return exclusions.screen([mask[np.ix_(indices, indices)]], [1.0], len(indices))
+
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
         atoms = atoms if atoms is not None else self.atoms
@@ -71,16 +95,28 @@ class FastForces(Calculator):
         cell = np.array(atoms.cell)
         terms = self.params.terms
 
+        numbers = atoms.get_atomic_numbers()
+        mask = self.params.exclusions
+
         energy, forces, virial = self.qforce(pos, pbc, cell, self._bonded)
 
         if self.electrostatic is not None:
-            de, df, dw = self.electrostatic(pos, pbc, cell, terms)
+            de, df, dw = self.electrostatic(
+                pos, pbc, cell, terms, self._screen(terms, mask)
+            )
             energy, forces, virial = energy + de, forces + df, virial + dw
         if "lennardjones" in terms:
             de, df, dw = self.lj(pos, pbc, cell, terms)
             energy, forces, virial = energy + de, forces + df, virial + dw
-        de, df, dw = self.zbl(pos, atoms.get_atomic_numbers(), pbc, cell)
+        de, df, dw = self.zbl(pos, numbers, pbc, cell)
         energy, forces, virial = energy + de, forces + df, virial + dw
+
+        if mask is not None:
+            sigma, eps = exclusions.lj_parameters(terms, len(numbers))
+            de, df, dw = exclusions.additive(
+                pos, numbers, pbc, cell, mask, sigma, eps
+            )
+            energy, forces, virial = energy + de, forces + df, virial + dw
 
         energy = energy + self.params.e0
 

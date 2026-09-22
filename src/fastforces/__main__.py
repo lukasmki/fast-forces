@@ -1,11 +1,48 @@
-"""Command line entry point: parameterize a SMILES string."""
+"""Command line entry point: parameterize a SMILES string, or a whole manifest.
+
+    fast-forces CC#N -o acetonitrile.jsonl
+    fast-forces examples/proton-transfer/Water.json
+"""
 
 import argparse
+import sys
 
 from . import FitConfig, build, parameterize
 
 
+def manifest_main(argv: list[str]) -> None:
+    """Fit every molecule and reaction a manifest lists; see `manifest`."""
+    from . import manifest
+
+    parser = argparse.ArgumentParser(
+        prog="fast-forces", description=manifest_main.__doc__
+    )
+    parser.add_argument("manifest", help="manifest .json file")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate the manifest and print what would be fitted",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        loaded = manifest.load(args.manifest)
+    except manifest.ManifestError as error:
+        parser.exit(2, f"fast-forces: {error}\n")
+    if args.dry_run:
+        print(loaded.plan())
+        return
+    outcomes = manifest.run(loaded)
+    if not all(o.ok for o in outcomes):
+        sys.exit(1)
+
+
 def main() -> None:
+    argv = sys.argv[1:]
+    if argv and argv[0].endswith(".json"):
+        manifest_main(argv)
+        return
+
     parser = argparse.ArgumentParser(prog="fast-forces", description=__doc__)
     parser.add_argument("smiles", help="SMILES string of the molecule to fit")
     parser.add_argument("-o", "--output", default=None, help="jsonl output path")
@@ -19,7 +56,7 @@ def main() -> None:
         default=None,
         help="jsonl force field to start the fit from, instead of the element table",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     from tblite.ase import TBLite
 

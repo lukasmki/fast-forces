@@ -44,13 +44,19 @@ def test_fitted_angle_matches_the_reference(h2o2_fit):
     assert theta0[0] == pytest.approx(REFERENCE_THETA, abs=np.radians(3))
 
 
-def test_bond_r0_is_compressed_below_the_true_length(h2o2_fit):
-    """The design property: `r0` balances the nonbonded baseline.
+def test_bond_r0_lands_on_the_true_length_once_the_pairs_are_excluded(h2o2_fit):
+    """`r0` balances whatever nonbonded baseline survives on the bonded pair.
 
-    `ZBL` contributes ~20 eV/A of repulsion at a normal bond length and has no
-    switching function, so the bond has to be pre-compressed to pull back.  A fitted
-    H2O2 force field's O-H `r0` is 0.70 A against a true 0.97 A for the same
-    reason.
+    H2O2 has graph diameter 3, so `EXCLUSION_DEPTH` removes *every* pair from
+    all three whole-system sums and there is no baseline left to balance: `r0`
+    comes out at the measured bond length.  That is the property being pinned,
+    and it is a property of the exclusions rather than of the fit -- before them
+    `ZBL` put ~20 eV/A of repulsion on each bonded pair against a reference
+    force of zero, and `r0` had to be pre-compressed to pull back against it
+    (a fitted O-H `r0` of 0.70 A against a true 0.97 A).
+
+    A molecule large enough to have surviving pairs would be compressed again,
+    for the same reason; there is no such template in this fixture.
     """
     _, params, path = h2o2_fit
     equilibrium = io.read_training_set(path).equilibrium
@@ -59,7 +65,7 @@ def test_bond_r0_is_compressed_below_the_true_length(h2o2_fit):
         params.terms["bond"]["atoms"], params.terms["bond"]["kwargs"]["r0"], strict=True
     ):
         true_length = np.linalg.norm(positions[row[0]] - positions[row[1]])
-        assert r0 < true_length
+        assert r0 == pytest.approx(true_length, abs=0.01)
 
 
 def test_symmetry_equivalent_bonds_share_parameters(h2o2_fit):
@@ -466,3 +472,18 @@ def test_a_fixed_charge_starting_point_switches_the_fit_over(tmp_path, h2o2_fit)
 
     assert again.electrostatics() == "coulomb"
     assert np.allclose(again.terms["coulomb"]["kwargs"]["q"], charges)
+
+
+def test_a_diatomic_fits(tmp_path, tblite_factory):
+    """A bond and nothing else: the linear block has no columns at all, which
+    used to reach `lsq_linear` as a shape error rather than as an empty solve."""
+    import fastforces as ff
+
+    params = ff.parameterize(
+        ff.build("[OH-]"),
+        tblite_factory,
+        config=FitConfig(n_mode_frames=10, n_conformers=0),
+        training_set=str(tmp_path / "hydroxide.xyz"),
+    )
+    assert set(params.bonded_terms()) == {"bond"}
+    assert params.report["force_rmse_eV_A"] < 0.01
