@@ -19,7 +19,7 @@ rxn = ff.parameterize_reaction(
 atoms.calc = rxn.calculator(atoms)
 
 A whole dataset -- molecules, reactions and how to fit them -- is one manifest
-file, fitted by `fast-forces Water.json` or `ff.manifest.run("Water.json")`.
+file, fitted by `fast-forces fit-manifest Water.json` or `ff.manifest.run("Water.json")`.
 """
 
 import numpy as np

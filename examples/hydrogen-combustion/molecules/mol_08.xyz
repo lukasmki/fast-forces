@@ -1,3 +1,0 @@
-1
-Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[H]" connectivity="_JSON []" spin=1 method=GFN2-xTB frame_kind=equilibrium charge=0 energy=-10.70721125644397 pbc="F F F"
-H        0.00000000       0.00000000       0.00000000       0.00000001      -0.00000000      -0.00000000      -0.00000000

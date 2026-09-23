@@ -42,10 +42,12 @@ prices it; see `refine.DEFAULT_MAX_WAVENUMBER`.  The frequency table
 is printed in cm^-1, where the cost is legible.
 """
 
-from argparse import ArgumentParser
+from enum import Enum
 from pathlib import Path
+from typing import Annotated
 import json
-import sys
+
+import typer
 
 from ase import Atoms, io
 from ase.data import atomic_masses, atomic_numbers
@@ -274,116 +276,137 @@ def _fit_rmsd(frames, **kwargs) -> list:
     return fit_rmsd(frames, **kwargs).to_terms()
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = ArgumentParser(prog="fast-forces refit", description=__doc__)
-    parser.add_argument("rnet", metavar="manifest", help="the dataset manifest (.json)")
-    parser.add_argument("--eps", type=float, default=DEFAULT_EPS)
-    parser.add_argument(
-        "--bimol-cutoff",
-        type=float,
-        default=DEFAULT_BIMOL_CUTOFF,
-        help="separation (A) past which a bimolecular channel stops being "
-        "enumerated. Must match what the calculation will run with: "
-        "`fit_twobody` quenches a fission's coupling here, because past it "
-        "there is no state left to couple to. Raising it is what a channel "
-        "reported as cutoff-limited below needs.",
-    )
-    parser.add_argument(
-        "--amplitude",
-        type=float,
-        default=None,
-        help="amplitude (eV) to use where a transition state has no reference "
-        "energy; without it such reactions are reported and skipped. A channel "
-        "whose barrier cannot be inverted is decoupled (A = 0) rather than given "
-        "this value.",
-    )
-    parser.add_argument("-n", "--dry-run", action="store_true")
-    parser.add_argument(
-        "--rmsd-width",
-        action="store_true",
-        help="keep the RMSD width for atom-transfer channels instead of measuring "
-        "it in the transferring atom's triangle. The amplitude is identical "
-        "either way; this only changes which coordinates switch the coupling "
-        "off, so it is the way to reproduce a pre-`fit_threebody` baseline.",
-    )
-    parser.add_argument(
-        "--bonds",
-        action="store_true",
-        help="first rescale each molecule template's Morse well depths so "
-        "its bonds carry its full atomization energy, leaving no constant "
-        "shift. Do this before fitting couplings: the shift is what makes "
-        "reactant and product disagree about the energy of a broken bond.",
-    )
-    parser.add_argument(
-        "--force-constants",
-        action="store_true",
-        help="refit the Morse force constants as well as the depths, so the "
-        "diabats rise above the reference barriers and the amplitudes become "
-        "invertible. Implies --bonds. Paid for in vibrational frequencies; see "
-        "--frequency-weight and --max-k-scale.",
-    )
-    parser.add_argument(
-        "--fit-mode",
-        choices=["asymptote", "k", "asymptote-k"],
-        default="asymptote",
-        help="`asymptote` fits a per-bond asymptote height `h`, leaving every "
-        "force constant as q-force fitted it. `k` buys the depth by stiffening "
-        "the bonds instead; `asymptote-k` fits both.",
-    )
-    parser.add_argument(
-        "--max-asymptote",
-        type=float,
-        default=DEFAULT_MAX_ASYMPTOTE,
-        help="upper bound (eV) on the per-bond asymptote height in the "
-        "`asymptote` modes; the lower bound is `bond_asymptote`. Setting it "
-        "there freezes `h`, which is the vacuity check: plain Morse.",
-    )
-    parser.add_argument(
-        "--max-k-scale",
-        type=float,
-        default=DEFAULT_MAX_SCALE,
-        help="hard bound on each force-constant scale. Its square root is the "
-        "cap on frequency drift; 1.0 freezes the force constants entirely. "
-        "Relative to the force constants in the .jsonl files as they stand, so "
-        "re-running over already-fitted output compounds the bound.",
-    )
-    parser.add_argument(
-        "--frequency-weight",
-        type=float,
-        default=DEFAULT_FREQUENCY_WEIGHT,
-        help="how hard the fit is pulled back towards q-force's force constants",
-    )
-    parser.add_argument(
-        "--max-wavenumber",
-        type=float,
-        default=DEFAULT_MAX_WAVENUMBER,
-        help="stretching modes above this (cm^-1) cost the objective. This is "
-        "the timestep expressed as a force-field property: ~15 steps per period "
-        "means a dt of 0.5 fs needs everything under 4450.",
-    )
-    parser.add_argument(
-        "--curvature-weight",
-        type=float,
-        default=DEFAULT_CURVATURE_WEIGHT,
-        help="how much a mode over --max-wavenumber costs. 0 removes the cap "
-        "entirely, which is the vacuity check for it.",
-    )
-    parser.add_argument(
-        "--refit-manual",
-        action="store_true",
-        help="overwrite amplitudes marked `provenance: manual` in the existing "
-        "term files. Without it they are kept and only their width is refitted.",
-    )
-    parser.add_argument(
-        "--margin",
-        type=float,
-        default=DEFAULT_MARGIN,
-        help="how far below the reference barrier (eV) a diabat must sit before "
-        "the channel counts as fittable",
-    )
-    args = parser.parse_args(argv)
+class FitMode(str, Enum):
+    asymptote = "asymptote"
+    k = "k"
+    asymptote_k = "asymptote-k"
 
-    manifest_path = Path(args.rnet).resolve()
+
+def main(
+    manifest_file: Annotated[
+        Path,
+        typer.Argument(
+            metavar="MANIFEST",
+            exists=True,
+            dir_okay=False,
+            help="the dataset manifest (.json)",
+        ),
+    ],
+    eps: float = DEFAULT_EPS,
+    bimol_cutoff: Annotated[
+        float,
+        typer.Option(
+            help="separation (A) past which a bimolecular channel stops being "
+            "enumerated. Must match what the calculation will run with: "
+            "`fit_twobody` quenches a fission's coupling here, because past it "
+            "there is no state left to couple to. Raising it is what a channel "
+            "reported as cutoff-limited below needs."
+        ),
+    ] = DEFAULT_BIMOL_CUTOFF,
+    amplitude: Annotated[
+        float | None,
+        typer.Option(
+            help="amplitude (eV) to use where a transition state has no reference "
+            "energy; without it such reactions are reported and skipped. A channel "
+            "whose barrier cannot be inverted is decoupled (A = 0) rather than "
+            "given this value."
+        ),
+    ] = None,
+    dry_run: Annotated[bool, typer.Option("-n", "--dry-run")] = False,
+    rmsd_width: Annotated[
+        bool,
+        typer.Option(
+            "--rmsd-width",
+            help="keep the RMSD width for atom-transfer channels instead of "
+            "measuring it in the transferring atom's triangle. The amplitude is "
+            "identical either way; this only changes which coordinates switch the "
+            "coupling off, so it is the way to reproduce a pre-`fit_threebody` "
+            "baseline.",
+        ),
+    ] = False,
+    bonds: Annotated[
+        bool,
+        typer.Option(
+            "--bonds",
+            help="first rescale each molecule template's Morse well depths so "
+            "its bonds carry its full atomization energy, leaving no constant "
+            "shift. Do this before fitting couplings: the shift is what makes "
+            "reactant and product disagree about the energy of a broken bond.",
+        ),
+    ] = False,
+    force_constants: Annotated[
+        bool,
+        typer.Option(
+            "--force-constants",
+            help="refit the Morse force constants as well as the depths, so the "
+            "diabats rise above the reference barriers and the amplitudes become "
+            "invertible. Implies --bonds. Paid for in vibrational frequencies; see "
+            "--frequency-weight and --max-k-scale.",
+        ),
+    ] = False,
+    fit_mode: Annotated[
+        FitMode,
+        typer.Option(
+            help="`asymptote` fits a per-bond asymptote height `h`, leaving every "
+            "force constant as q-force fitted it. `k` buys the depth by stiffening "
+            "the bonds instead; `asymptote-k` fits both."
+        ),
+    ] = FitMode.asymptote,
+    max_asymptote: Annotated[
+        float,
+        typer.Option(
+            help="upper bound (eV) on the per-bond asymptote height in the "
+            "`asymptote` modes; the lower bound is `bond_asymptote`. Setting it "
+            "there freezes `h`, which is the vacuity check: plain Morse."
+        ),
+    ] = DEFAULT_MAX_ASYMPTOTE,
+    max_k_scale: Annotated[
+        float,
+        typer.Option(
+            help="hard bound on each force-constant scale. Its square root is the "
+            "cap on frequency drift; 1.0 freezes the force constants entirely. "
+            "Relative to the force constants in the .jsonl files as they stand, so "
+            "re-running over already-fitted output compounds the bound."
+        ),
+    ] = DEFAULT_MAX_SCALE,
+    frequency_weight: Annotated[
+        float,
+        typer.Option(
+            help="how hard the fit is pulled back towards q-force's force constants"
+        ),
+    ] = DEFAULT_FREQUENCY_WEIGHT,
+    max_wavenumber: Annotated[
+        float,
+        typer.Option(
+            help="stretching modes above this (cm^-1) cost the objective. This is "
+            "the timestep expressed as a force-field property: ~15 steps per period "
+            "means a dt of 0.5 fs needs everything under 4450."
+        ),
+    ] = DEFAULT_MAX_WAVENUMBER,
+    curvature_weight: Annotated[
+        float,
+        typer.Option(
+            help="how much a mode over --max-wavenumber costs. 0 removes the cap "
+            "entirely, which is the vacuity check for it."
+        ),
+    ] = DEFAULT_CURVATURE_WEIGHT,
+    refit_manual: Annotated[
+        bool,
+        typer.Option(
+            "--refit-manual",
+            help="overwrite amplitudes marked `provenance: manual` in the existing "
+            "term files. Without it they are kept and only their width is refitted.",
+        ),
+    ] = False,
+    margin: Annotated[
+        float,
+        typer.Option(
+            help="how far below the reference barrier (eV) a diabat must sit before "
+            "the channel counts as fittable"
+        ),
+    ] = DEFAULT_MARGIN,
+) -> None:
+    manifest_path = manifest_file.resolve()
     manifest = json.loads(manifest_path.read_text())
 
     molecule_stems = [
@@ -395,22 +418,22 @@ def main(argv: list[str] | None = None) -> int:
     # fit would actually produce instead of the ones already on disk.
     reaction_set = ReactionSet(manifest_path)
 
-    if args.force_constants:
+    if force_constants:
         templates = load_templates(manifest_path, manifest, reaction_set.params)
         fit = fit_force_constants(
             reaction_set,
             templates,
             load_reactions(manifest_path, manifest),
-            margin=args.margin,
-            frequency_weight=args.frequency_weight,
-            max_scale=args.max_k_scale,
-            mode=args.fit_mode,
-            max_wavenumber=args.max_wavenumber,
-            curvature_weight=args.curvature_weight,
-            max_asymptote=args.max_asymptote,
+            margin=margin,
+            frequency_weight=frequency_weight,
+            max_scale=max_k_scale,
+            mode=fit_mode.value,
+            max_wavenumber=max_wavenumber,
+            curvature_weight=curvature_weight,
+            max_asymptote=max_asymptote,
         )
-        report_force_constants(fit, args.max_wavenumber)
-        if not args.dry_run:
+        report_force_constants(fit, max_wavenumber)
+        if not dry_run:
             for (name, _, _), stem in zip(templates, molecule_stems):
                 write_jsonl(
                     stem.with_suffix(".jsonl"),
@@ -419,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
         print()
 
-    elif args.bonds:
+    elif bonds:
         print(f"{'molecule':<16}{'scale':>10}{'E_bonded':>12}{'E_reference':>13}")
         templates = load_templates(manifest_path, manifest, reaction_set.params)
         fitted_terms = []
@@ -436,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{atoms.get_potential_energy():>13.5f}"
             )
             fitted_terms.append(fitted)
-            if not args.dry_run:
+            if not dry_run:
                 write_jsonl(
                     stem.with_suffix(".jsonl"), strip_exclusions(fitted), exist_ok=True
                 )
@@ -459,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
         # `NOMINAL_AMPLITUDE`, not for the amplitude someone then wrote in.
         existing = stem.with_suffix(".jsonl")
         manual = None
-        if not args.refit_manual and existing.exists():
+        if not refit_manual and existing.exists():
             stored = read_jsonl(existing)
             if stored and stored[0].get("provenance") == "manual":
                 manual = stored[0]["kwargs"]["A"]
@@ -469,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             if manual is not None:
-                terms = _fit_rmsd(frames, amplitude=manual, eps=args.eps)
+                terms = _fit_rmsd(frames, amplitude=manual, eps=eps)
                 terms[0]["provenance"] = "manual"
                 source = "kept (manual; --refit-manual to replace)"
                 preserved += 1
@@ -497,8 +520,8 @@ def main(argv: list[str] | None = None) -> int:
                     pair,
                     list(moving),
                     diabats,
-                    eps=args.eps,
-                    bimol_cutoff=args.bimol_cutoff,
+                    eps=eps,
+                    bimol_cutoff=bimol_cutoff,
                 ).to_terms()
                 source = "fitted from the diabatic crossing (bond length)"
                 # A channel quenched against the cutoff rather than against its
@@ -515,19 +538,19 @@ def main(argv: list[str] | None = None) -> int:
                     diabatic_energy(reaction_set, frames[0], transition.positions),
                     diabatic_energy(reaction_set, frames[-1], transition.positions),
                 )
-                if kind == "transfer" and not args.rmsd_width:
+                if kind == "transfer" and not rmsd_width:
                     # Same amplitude, from the same reference barrier; only the
                     # width is measured in the transferring atom's own triangle
                     # instead of in the RMSD to the whole transition state.
                     terms = fit_threebody(
-                        frames, spec, diabatic_energies=energies, eps=args.eps
+                        frames, spec, diabatic_energies=energies, eps=eps
                     ).to_terms()
                     source = "fitted from TS energy (transfer triangle)"
                 else:
-                    terms = _fit_rmsd(frames, diabatic_energies=energies, eps=args.eps)
+                    terms = _fit_rmsd(frames, diabatic_energies=energies, eps=eps)
                     source = "fitted from TS energy"
-            elif args.amplitude is not None:
-                terms = _fit_rmsd(frames, amplitude=args.amplitude, eps=args.eps)
+            elif amplitude is not None:
+                terms = _fit_rmsd(frames, amplitude=amplitude, eps=eps)
                 source = "width only (--amplitude)"
             else:
                 print(
@@ -544,8 +567,8 @@ def main(argv: list[str] | None = None) -> int:
             # Hamiltonian is not driven by a number nobody fitted.  The width
             # still comes from geometry and is kept, so filling the amplitude in
             # later needs no refit.
-            amplitude = 0.0 if args.amplitude is None else args.amplitude
-            terms = _fit_rmsd(frames, amplitude=amplitude, eps=args.eps)
+            fallback = 0.0 if amplitude is None else amplitude
+            terms = _fit_rmsd(frames, amplitude=fallback, eps=eps)
             source = f"{terms[0]['provenance']} ({error.args[0][:52]}...)"
             decoupled += 1
             # One bond changed, in one direction: a fission or recombination
@@ -560,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{stem.name:<16}{kwargs['A']:>12.4f}{kwargs['a']:>12.2f}{centre}  {source}"
         )
-        if not args.dry_run:
+        if not dry_run:
             write_jsonl(
                 stem.with_suffix(".jsonl"), terms, exist_ok=True
             )
@@ -569,24 +592,24 @@ def main(argv: list[str] | None = None) -> int:
     if cutoff_limited:
         print(
             f"\n{len(cutoff_limited)} fission channel(s) have their coupling width "
-            f"set by --bimol-cutoff ({args.bimol_cutoff:.1f} A) rather than by their "
+            f"set by --bimol-cutoff ({bimol_cutoff:.1f} A) rather than by their "
             "own reactant, because the crossing is nearer the cutoff than the "
             "reactant minimum. The coupling has to be off where the state stops "
             "being enumerated, so the amplitude is capped below what the surface "
             "would otherwise support:"
         )
-        for name, centre, amplitude in cutoff_limited:
+        for name, centre, limited in cutoff_limited:
             print(
                 f"    {name:<12} crossing {centre:.3f} A, "
-                f"{args.bimol_cutoff - centre:.3f} A inside the cutoff, "
-                f"A = {amplitude:+.4f} eV"
+                f"{bimol_cutoff - centre:.3f} A inside the cutoff, "
+                f"A = {limited:+.4f} eV"
             )
         print(
             "  Raising --bimol-cutoff (and `System`'s to match) is what these "
             "need; refitting the force field will not move them."
         )
 
-    verb = "would write" if args.dry_run else "wrote"
+    verb = "would write" if dry_run else "wrote"
     print(
         f"\n{verb} {fitted} reaction term files "
         f"({fitted - decoupled - preserved} with a fitted amplitude, "
@@ -618,8 +641,9 @@ def main(argv: list[str] | None = None) -> int:
                 "this message means `reaction.classify` did not recognise it, or that fit "
                 "raised as well -- its own error text says which."
             )
-    return 1 if skipped else 0
+    if skipped:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    typer.run(main)

@@ -24,6 +24,10 @@ WATER = (
 )
 
 
+# O + OH -> O2 + H: 17 electrons, three reactant radicals.
+OXYGEN = "[O].[OH]>>[O][O].[H]"
+
+
 def write(tmp_path, **sections) -> Path:
     body = {"name": "Test", "molecules": [], "reactions": []}
     body.update(sections)
@@ -218,6 +222,12 @@ def test_contradictory_electrostatics_are_refused(tmp_path):
         ),
         ({"molecules": [{"smiles": "O.O", "path": "a"}]}, "disconnected"),
         ({"reactions": [{"smiles": "O>>O", "path": "a"}]}, "no bond broken"),
+        ({"molecules": [{"smiles": "[OH]", "path": "a", "spin": 2}]}, "parity"),
+        ({"molecules": [{"smiles": "O", "path": "a", "spin": -2}]}, "non-negative"),
+        ({"reactions": [{"smiles": OXYGEN, "path": "a", "spin": 2}]}, "parity"),
+        ({"reactions": [{"smiles": OXYGEN, "path": "a", "spin_ts": 1.0}]}, "integer"),
+        ({"reactions": [{"smiles": "OO>>[OH].[OH]", "path": "a", "spin_ts": 2}]},
+         "fission"),
     ],
 )
 def test_a_malformed_manifest_is_refused_before_anything_runs(
@@ -232,12 +242,11 @@ def test_a_malformed_manifest_is_refused_before_anything_runs(
 # ---------------------------------------------------------------------------
 
 
-def _reaction_entry(tmp_path, smiles):
+def _reaction_entry(tmp_path, smiles, **extra):
     frames = tmp_path / "frames.xyz"
     frames.write_bytes((HERE / "h3o-h2o-transfer.xyz").read_bytes())
-    path = write(
-        tmp_path, reactions=[{"smiles": smiles, "path": "r", "frames": "frames.xyz"}]
-    )
+    entry = {"smiles": smiles, "path": "r", "frames": "frames.xyz", **extra}
+    path = write(tmp_path, reactions=[entry])
     entry = M.load(path).reactions[0]
     return entry, R.parse(entry.mapped)
 
@@ -259,6 +268,51 @@ def test_frames_bonded_differently_from_the_reaction_are_refused(tmp_path):
     entry, reaction = _reaction_entry(tmp_path, moved)
     with pytest.raises(M.ManifestError, match="bonded differently"):
         M._supplied_frames(entry, reaction)
+
+
+def test_frames_at_another_spin_are_refused(tmp_path):
+    """The stored water frames state no spin, so they were computed at the
+    closed-shell parity default -- not at the triplet this entry asks for."""
+    entry, reaction = _reaction_entry(tmp_path, "[OH3+].O>>O.[OH3+]", spin=2)
+    with pytest.raises(M.ManifestError, match="2S=0, not the 2"):
+        M._supplied_frames(entry, reaction)
+
+
+# ---------------------------------------------------------------------------
+# spin
+# ---------------------------------------------------------------------------
+
+
+def _spins(tmp_path, smiles=OXYGEN, **keys):
+    return M.load(write(tmp_path, reactions=[{"smiles": smiles, "path": "r", **keys}]))
+
+
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        ({}, (3, 3, 3)),
+        ({"spin": 1}, (1, 1, 1)),
+        ({"spin_ts": 1}, (3, 1, 3)),
+        ({"spin": 1, "spin_p": 3}, (1, 1, 3)),
+        ({"spin_r": 1, "spin_ts": 3, "spin_p": 1}, (1, 3, 1)),
+    ],
+)
+def test_spin_sets_every_frame_and_the_per_frame_keys_override_it(
+    tmp_path, keys, expected
+):
+    entry = _spins(tmp_path, **keys).reactions[0]
+    assert tuple(entry.spins[k] for k in R.FRAME_KINDS) == expected
+
+
+def test_a_fission_takes_its_reactant_spin(tmp_path):
+    entry = _spins(tmp_path, "OO>>[OH].[OH]", spin_r=2).reactions[0]
+    assert entry.spins["reactant"] == 2
+
+
+def test_the_plan_shows_the_spins(tmp_path):
+    assert "2S: reactant 1, transition 1, product 3" in _spins(
+        tmp_path, spin=1, spin_p=3
+    ).plan()
 
 
 # ---------------------------------------------------------------------------

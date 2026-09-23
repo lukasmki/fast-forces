@@ -5,7 +5,7 @@ from typing import cast
 
 import numpy as np
 from ase import Atoms, units
-from ase.calculators.calculator import Calculator, all_changes
+from ase.calculators.calculator import CalculationFailed, Calculator, all_changes
 from pyscf import dft, gto, lib, scf
 
 
@@ -198,6 +198,7 @@ class PySCFCalculator(Calculator):
         verbose: int = 0,
         threads: int | None = None,
         level_shift: float | tuple[float, float] = 0.0,
+        max_cycle: int = 200,
         cp: bool = False,
         pcm: str | None = None,
         pcm_eps: float = 78.3553,
@@ -217,7 +218,10 @@ class PySCFCalculator(Calculator):
             gto.M()
             .set(verbose=verbose)
             .apply(dft.UKS, xc=xc)
-            .set(conv_tol=1e-6, level_shift=level_shift)
+            # PySCF's own limit is 50 cycles, which open-shell pairs -- a
+            # triplet OH + OH at a saddle guess -- routinely need more than,
+            # and an SCF that runs out now raises (`_calculate_bo`).
+            .set(conv_tol=1e-6, level_shift=level_shift, max_cycle=max_cycle)
             .density_fit()
         )
         if pcm is not None:
@@ -358,6 +362,17 @@ class PySCFCalculator(Calculator):
         self._synced = atoms.get_positions().copy()
         self._fock = None
         self._lowdin = None
+        # The scanner returns whatever it had when it ran out of cycles and
+        # PySCF does not raise: an open-shell O + OH pair at 10 A came back from
+        # PBE0/def2-SVP 88 eV above its own fragments with nothing to say so.
+        # Refining that density with second-order SCF is no rescue -- it
+        # converged to a state 610 eV up whose forces disagreed with its own
+        # finite differences -- so the point fails, as a tblite one does,
+        # rather than entering a training set.
+        if not self.mf.converged:
+            raise CalculationFailed(
+                f"SCF not converged ({mol.natm} atoms, 2S={self.spin})"
+            )
         return energy, gradient, self.mf.make_rdm1()
 
     def _calculate_cp(self, atoms: Atoms):

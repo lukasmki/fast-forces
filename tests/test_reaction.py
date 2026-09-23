@@ -179,6 +179,39 @@ def test_the_guess_carries_the_formal_charge():
     assert R.guess(R.parse(WATER)).get_initial_charges().sum() == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize(
+    "smiles, spin",
+    [
+        (WATER, 0),
+        ("[H:1][H:2].[O:3]>>[O:3][H:2].[H:1]", 2),  # O(3P) + H2: triplet
+        ("[O:1].[O:2][H:3]>>[H:3].[O:1][O:2]", 3),  # parity alone says doublet
+        (FISSION, 0),
+    ],
+)
+def test_the_guess_carries_the_high_spin_of_its_reactants(smiles, spin):
+    assert R.guess(R.parse(smiles)).info["spin"] == spin
+
+
+def test_a_displacement_is_assigned_the_side_it_heads_for():
+    """H2 + O -> OH + H: shortening H-H while stretching O-H is the way back."""
+    reaction = R.parse("[H:1][H:2].[O:3]>>[O:3][H:2].[H:1]")
+    ts = np.array([[0.0, 0.0, 0.0], [0.9, 0.0, 0.0], [2.1, 0.0, 0.0]])
+    back = ts + np.array([[0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.1, 0.0, 0.0]])
+    assert R._toward(reaction, ts, back) == "reactant"
+    assert R._toward(reaction, ts, 2 * ts - back) == "product"
+
+
+def test_frame_spins_fill_in_the_reaction_spin():
+    reaction = R.parse("[H:1][H:2].[O:3]>>[O:3][H:2].[H:1]")
+    assert R.frame_spins(reaction, {"product": 0}) == {
+        "reactant": 2,
+        "transition": 2,
+        "product": 0,
+    }
+    with pytest.raises(R.ReactionError, match="unknown frame kinds"):
+        R.frame_spins(reaction, {"ts": 0})
+
+
 def test_the_guess_does_not_overlap_atoms():
     atoms = R.guess(R.parse(SN2))
     distances = atoms.get_all_distances()

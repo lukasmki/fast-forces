@@ -92,12 +92,13 @@ has to be constrained.
 
 A whole dataset of molecules and reactions is described by one JSON manifest --
 the same file DynamicTopology loads, with a `fit_config` block DynamicTopology
-ignores; see DynamicTopology's `datasets/Water/Water.json` -- and fitted in one
-command:
+ignores; see
+[`examples/hydrogen-combustion/hydrogen-combustion.json`](examples/hydrogen-combustion/hydrogen-combustion.json)
+-- and fitted in one command:
 
 ```bash
-fast-forces ../DynamicTopo/datasets/Water/Water.json --dry-run   # validate, show the plan
-fast-forces ../DynamicTopo/datasets/Water/Water.json             # fit, overwriting the dataset
+fast-forces fit-manifest examples/hydrogen-combustion/hydrogen-combustion.json --dry-run   # validate, show the plan
+fast-forces fit-manifest examples/hydrogen-combustion/hydrogen-combustion.json             # fit, overwriting the dataset
 ```
 
 Each entry's `path` is an output stem relative to the manifest: a molecule
@@ -118,8 +119,26 @@ appearance and hydrogens are assigned to change as few bonds as possible
 Molecules are fitted first and reactions reuse them as fragments. A reaction
 entry may give `"frames"` -- reactant, TS and product in one extxyz -- to skip
 the saddle search, which is what a barrierless gas-phase channel needs, and
-`"amplitude"` to fix the coupling amplitude. A molecule entry may give `"spin"`
-(`2S`); otherwise it is read from the SMILES radicals.
+`"amplitude"` to fix the coupling amplitude.
+
+Spin is `2S`, the number of unpaired electrons, and is used only for fitting --
+DynamicTopology reads nothing from an entry but its `id` and `path`. A molecule
+entry may give `"spin"`; otherwise it is read from the SMILES radicals. A
+reaction's frames default to every reactant radical high-spin coupled
+(`[O].[OH]` runs at 3, not the doublet the electron count alone would pick). On
+a reaction entry `"spin"` sets the transition-state search and both endpoint
+relaxations, and `"spin_r"`, `"spin_ts"` and `"spin_p"` override the reactant,
+the transition state and the product individually:
+
+```json
+{"id": 2, "smiles": "[H:1][H:2].[O:3]>>[O:3][H:2].[H:1]", "path": "reactions/rxn_02",
+ "spin": 2, "spin_p": 0}
+```
+
+A fission is fitted from its reactant alone, so it takes `"spin"` or `"spin_r"`
+and refuses the other two. A value the electron count does not allow is refused
+when the manifest is loaded, and a cached training set or `"frames"` file at a
+different spin is refused rather than reused.
 
 Training sets already in `workdir` are reused, so a rerun refits without the
 reference calculator; delete one to regenerate it. `global_params` is
@@ -135,7 +154,11 @@ Numbered, runnable examples live in [`quickstart/`](quickstart/) -- start with
 `quickstart/01_quickstart.py` and read `quickstart/README.md` for the index.
 `quickstart/10_reaction.py` walks through the reaction pipeline end to end, and
 `quickstart/11_fixed_charges.py` fits one molecule with each electrostatics
-model against the same reference data and compares them.
+model against the same reference data and compares them. A complete fitted
+dataset -- manifest, molecules, reactions and the training sets they were fitted
+from -- is in [`examples/hydrogen-combustion/`](examples/hydrogen-combustion/);
+it is the input to the manifest command above and loads straight into
+DynamicTopology.
 
 ## Workflow Overview
 

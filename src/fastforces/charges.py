@@ -15,8 +15,8 @@ These are gas-phase charges.  Every liquid fixed-charge water model carries a
 larger dipole than this -- SPC/E 2.35 D against 1.85 D in the gas -- to stand in
 for the polarization a fixed-charge model does not have.
 
-Formerly DynamicTopology's `datasets/Water-fixed-pc/fit_charges.py`, which is
-now `examples/datasets/Water-fixed-pc/fit_charges.py` on top of this module.
+Formerly DynamicTopology's `datasets/Water-fixed-pc/fit_charges.py`; `mk_charges`
+is that script's fit and `charge_terms` turns its result into template terms.
 """
 
 from __future__ import annotations

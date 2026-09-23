@@ -187,6 +187,7 @@ class Reaction:
         product_bonds: frozenset,
         reactant_fragments: list,
         product_fragments: list,
+        spin: int = 0,
     ):
         self.smiles = smiles
         self.numbers = np.asarray(numbers, dtype=int)
@@ -195,6 +196,7 @@ class Reaction:
         self.product_bonds = product_bonds
         self.reactant_fragments = reactant_fragments
         self.product_fragments = product_fragments
+        self.spin = int(spin)
 
     # -- access ---------------------------------------------------------
 
@@ -478,6 +480,12 @@ def parse(smiles: str) -> Reaction:
     charges = np.array(
         [float(a.GetFormalCharge()) for a in reactant.GetAtoms()], dtype=float
     )
+    # `2S` of the complex: every radical on the reactant side, high-spin
+    # coupled.  Electron-count parity -- what a calculator falls back to -- puts
+    # `[H][H].[O]` on the singlet surface and `[O].[OH]` on the doublet, which
+    # is neither the surface the channel runs on nor the one the fragments were
+    # fitted on, so the fragment `E0`s and the barrier would not share a zero.
+    spin = sum(a.GetNumRadicalElectrons() for a in reactant.GetAtoms())
 
     return Reaction(
         smiles=smiles,
@@ -487,6 +495,7 @@ def parse(smiles: str) -> Reaction:
         product_bonds=_bonds(product),
         reactant_fragments=_fragments(reactant),
         product_fragments=_fragments(product),
+        spin=spin,
     )
 
 
@@ -776,6 +785,7 @@ def guess(reaction: Reaction, seed: int = 42) -> Atoms:
     atoms = Atoms(numbers=reaction.numbers, positions=positions)
     atoms.set_initial_charges(reaction.charges)
     atoms.info["smiles"] = reaction.smiles
+    atoms.info["spin"] = reaction.spin
     return atoms
 
 
@@ -868,6 +878,7 @@ def endpoints(
     steps: int = 500,
     delta: float = 0.01,
     step: float = MODE_STEP,
+    spins: dict | None = None,
 ) -> tuple[Atoms, Atoms]:
     """The two minima the saddle `ts` connects, relaxed and in reaction order.
 
@@ -881,6 +892,12 @@ def endpoints(
     Which relaxation is the reactant is decided by perceived connectivity, not
     by the sign of the displacement -- the sign is an eigenvector phase, and
     which way it points is up to LAPACK.
+
+    `spins` (see `frame_spins`) sets the reactant's and the product's spin.
+    When they differ, each displacement is relaxed on the surface of the side
+    it heads for (`_toward`), and that guess has to survive the connectivity
+    check: a displacement that relaxes into the other basin was relaxed on the
+    wrong surface.
     """
     from .topology import perceive
 
@@ -896,11 +913,14 @@ def endpoints(
     mode = modes[0]
     mode = mode / float(np.linalg.norm(mode, axis=1).max()) * step
 
-    relaxed = []
+    spins = frame_spins(reaction, spins)
+    relaxed, heading = [], []
     for sign in (+1, -1):
         displaced = ts.copy()
         displaced.info.pop("connectivity", None)
         displaced.set_positions(ts.get_positions() + sign * mode)
+        heading.append(_toward(reaction, ts.get_positions(), displaced.get_positions()))
+        displaced.info["spin"] = spins[heading[-1]]
         relaxed.append(
             sampling.optimize(
                 displaced, calc_factory, fmax=fmax, steps=steps, kind="endpoint"
@@ -914,6 +934,13 @@ def endpoints(
         if found[first] == reaction.reactant_bonds:
             if found[second] != reaction.product_bonds:
                 break
+            if spins["reactant"] != spins["product"] and heading[first] != "reactant":
+                raise ReactionError(
+                    "the saddle's two downhill relaxations each ended in the basin "
+                    "the other was headed for, so each endpoint was relaxed on the "
+                    f"other's spin surface (reactant 2S={spins['reactant']}, "
+                    f"product 2S={spins['product']}). Supply the frames instead."
+                )
             return _tag(relaxed[first], reaction, "reactant"), _tag(
                 relaxed[second], reaction, "product"
             )
@@ -945,6 +972,44 @@ def _tag(frame: Atoms, reaction: Reaction, side: str) -> Atoms:
     return out
 
 
+FRAME_KINDS = ("reactant", "transition", "product")
+
+
+def frame_spins(reaction: Reaction, spins: dict | None = None) -> dict:
+    """`2S` for each of `FRAME_KINDS`: `spins` where it says, `reaction.spin` else.
+
+    One spin for the whole path is the usual case and the default, but a
+    channel may cross between surfaces -- a spin-forbidden recombination is
+    searched on one surface and relaxed on another -- so each frame can be given
+    its own.
+    """
+    spins = dict(spins or {})
+    unknown = sorted(set(spins) - set(FRAME_KINDS))
+    if unknown:
+        raise ReactionError(f"unknown frame kinds {unknown}; expected {FRAME_KINDS}")
+    return {kind: int(spins.get(kind, reaction.spin)) for kind in FRAME_KINDS}
+
+
+def _toward(reaction: Reaction, ts: np.ndarray, displaced: np.ndarray) -> str:
+    """Which side a displacement from the saddle heads for, before relaxing it.
+
+    Towards the reactant the bonds the reaction breaks shorten and the ones it
+    forms lengthen.  `endpoints` needs the answer before the relaxation rather
+    than after, when the endpoints are on different spin surfaces: the spin is
+    part of what the relaxation is run on.
+    """
+
+    def stretch(bonds) -> float:
+        return sum(
+            float(np.linalg.norm(displaced[i] - displaced[j]))
+            - float(np.linalg.norm(ts[i] - ts[j]))
+            for i, j in map(tuple, bonds)
+        )
+
+    shorter = stretch(reaction.broken) < stretch(reaction.formed)
+    return "reactant" if shorter else "product"
+
+
 def stationary_points(
     reaction: Reaction,
     calc_factory,
@@ -955,6 +1020,7 @@ def stationary_points(
     hessian_delta: float = 0.01,
     initial: Atoms | None = None,
     logfile=None,
+    spins: dict | None = None,
 ) -> list[Atoms]:
     """`[reactant, transition state, product]`, in one atom order.
 
@@ -963,13 +1029,17 @@ def stationary_points(
     the `rxn_*.xyz` layout does.
 
     `initial` overrides the built guess, for a channel whose saddle is known.
+    `spins` sets `2S` per frame (`frame_spins`): the saddle search runs on the
+    `"transition"` one, and each endpoint is relaxed on its own.
     """
-    start = initial if initial is not None else guess(reaction, seed=seed)
+    spins = frame_spins(reaction, spins)
+    start = (initial if initial is not None else guess(reaction, seed=seed)).copy()
+    start.info["spin"] = spins["transition"]
     saddle = transition_state(
         start, calc_factory, fmax=ts_fmax, steps=ts_steps, logfile=logfile
     )
     reactant, product = endpoints(
-        saddle, calc_factory, reaction, fmax=fmax, delta=hessian_delta
+        saddle, calc_factory, reaction, fmax=fmax, delta=hessian_delta, spins=spins
     )
     # The saddle's own connectivity is ambiguous by construction -- that is what
     # a transition state is -- so it carries the reactant's, which is the
@@ -1287,17 +1357,20 @@ class ReactionParameters:
             f"{'':12s} {'reference':>12s} {'EVB':>12s} {'error':>10s}"
             f" {'H_react':>10s} {'H_prod':>10s}"
         ]
-        for name, i in (("reactant", 0), ("transition", 1), ("product", 2)):
+        # A fission carries its reactant alone, so there is no barrier to report.
+        names = ("reactant", "transition", "product")
+        for name, i in zip(names, range(len(self.frames))):
             h1, h2 = energies["diabatic"][i]
             lines.append(
                 f"{name:12s} {reference[i]:12.5f} {evb[i]:12.5f} "
                 f"{evb[i] - reference[i]:10.5f} {h1:10.4f} {h2:10.4f}"
             )
-        lines.append(
-            f"{'barrier':12s} {reference[1] - reference[0]:12.5f} "
-            f"{evb[1] - evb[0]:12.5f} "
-            f"{(evb[1] - evb[0]) - (reference[1] - reference[0]):10.5f}"
-        )
+        if len(self.frames) == 3:
+            lines.append(
+                f"{'barrier':12s} {reference[1] - reference[0]:12.5f} "
+                f"{evb[1] - evb[0]:12.5f} "
+                f"{(evb[1] - evb[0]) - (reference[1] - reference[0]):10.5f}"
+            )
         lines.append(f"coupling     {self.coupling!r}")
         return "\n".join(lines)
 
@@ -1332,6 +1405,7 @@ def parameterize(
     logfile=None,
     fragments: dict | None = None,
     frames: list[Atoms] | None = None,
+    spins: dict | None = None,
 ):
     """Fit a whole EVB surface from an atom-mapped reaction SMILES.
 
@@ -1364,6 +1438,11 @@ def parameterize(
     a constrained path or a higher-level calculation, in this reaction's atom
     order and carrying reference energies.  Both still have to share one
     reference with each other, for the reason above.
+
+    `spins` is `2S` per frame kind (`frame_spins`); anything it leaves out is
+    `Reaction.spin`, every reactant radical high-spin coupled.  It reaches only
+    the frames computed here: supplied `frames` carry the spin they were
+    computed at, and fragments are fitted at their own.
     """
     from . import coupling as coupling_module
 
@@ -1388,8 +1467,10 @@ def parameterize(
         # A barrierless fission has no saddle to find, and `fit_twobody` needs
         # none: it walks the two diabats apart along the breaking bond instead.
         # The reactant geometry is still wanted, and it is the relaxed complex.
+        start = (guess(reaction, seed=seed) if initial is None else initial).copy()
+        start.info["spin"] = frame_spins(reaction, spins)["reactant"]
         reactant = sampling.optimize(
-            guess(reaction, seed=seed) if initial is None else initial,
+            start,
             calc_factory,
             fmax=1e-3,
             kind="reactant",
@@ -1397,7 +1478,12 @@ def parameterize(
         frames = [_tag(reactant, reaction, "reactant")]
     else:
         frames = stationary_points(
-            reaction, calc_factory, seed=seed, initial=initial, logfile=logfile
+            reaction,
+            calc_factory,
+            seed=seed,
+            initial=initial,
+            logfile=logfile,
+            spins=spins,
         )
 
     fitted = coupling_module.fit(

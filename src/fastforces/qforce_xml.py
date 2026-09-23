@@ -13,10 +13,12 @@ imported file is a starting point for `refine` and not a finished template.
 Formerly DynamicTopology's `io/xml.py` and `scripts/convert.py`.
 """
 
-from argparse import ArgumentParser
 from pathlib import Path
+from typing import Annotated
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element
+
+import typer
 
 from DynamicTopology.core.types import Term
 from DynamicTopology.io.json import write_jsonl
@@ -142,10 +144,15 @@ def convert(input_path: Path, output_path: Path) -> None:
             write_jsonl((output_path).with_suffix(".jsonl"), terms, convert=False)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = ArgumentParser(prog="fast-forces import-qforce", description=__doc__)
-    parser.add_argument("-i", "--input", type=Path, required=True)
-    parser.add_argument("-o", "--output", type=Path, required=True)
-    args = parser.parse_args(argv)
-    convert(args.input, args.output)
-    return 0
+def main(
+    input: Annotated[
+        Path,
+        typer.Option(
+            "-i", "--input", exists=True, help="q-force XML file or directory"
+        ),
+    ],
+    output: Annotated[
+        Path, typer.Option("-o", "--output", help="jsonl file or directory")
+    ],
+) -> None:
+    convert(input, output)

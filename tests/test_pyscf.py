@@ -113,14 +113,30 @@ def test_a_stated_connectivity_is_kept(hydroxide):
     assert work.arrays["bond-order"].shape == (2, 2)
 
 
-def test_a_perceived_connectivity_follows_the_geometry(hydroxide):
+def test_a_perceived_connectivity_follows_the_geometry():
     """Without one, it is perceived -- and re-perceived on the next call, so a
-    relaxation or an MD run sees a bond break."""
-    work = hydroxide.copy()
+    relaxation or an MD run sees a bond break.
+
+    The neutral radical, because it dissociates: closed-shell hydroxide keeps a
+    Mayer bond order near 0.9 out to 3 A, and at 4 A its SCF does not converge.
+    """
+    work = ff.build("[OH]")
     work.info.pop("connectivity", None)
-    work.calc = PySCFCalculator(charge=-1, spin=0, **CHEAP)
+    work.calc = PySCFCalculator(charge=0, spin=1, **CHEAP)
     work.get_potential_energy()
     assert [tuple(b[:2]) for b in work.info["connectivity"]] == [(0, 1)]
     work.positions[1] += [4.0, 0.0, 0.0]
     work.get_potential_energy()
     assert work.info["connectivity"] == []
+
+
+def test_an_unconverged_scf_raises(hydroxide):
+    """PySCF hands back whatever the last cycle had; it must not reach a
+    training set.  Closed-shell hydroxide pulled 4 A apart does not converge."""
+    from ase.calculators.calculator import CalculationFailed
+
+    work = hydroxide.copy()
+    work.positions[1] += [4.0, 0.0, 0.0]
+    work.calc = PySCFCalculator(charge=-1, spin=0, **CHEAP)
+    with pytest.raises(CalculationFailed, match="not converged"):
+        work.get_potential_energy()

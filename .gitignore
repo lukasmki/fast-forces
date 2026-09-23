@@ -11,3 +11,6 @@ wheels/
 
 # Example outputs
 quickstart/output/
+
+# Sphinx build output
+docs/_build/

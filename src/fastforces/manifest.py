@@ -29,6 +29,12 @@ file to regenerate it.  A change to the sampling half of `fit_config` --
 `n_mode_frames`, `temperature` -- therefore does not reach a molecule until its
 training set is deleted; a change to the fitting half does.
 
+Spin is `2S` and fitting-only; DynamicTopology ignores it.  A molecule entry's
+`spin` defaults to its SMILES radicals.  A reaction entry's `spin` sets every
+frame the reaction computes -- the saddle search and both endpoint relaxations
+-- and `spin_r`, `spin_ts` and `spin_p` set one each (`_frame_spins`); anything
+left unset is every reactant radical high-spin coupled (`Reaction.spin`).
+
 Molecules are fitted before reactions, and a reaction's fragments are taken
 from the molecule fits wherever the manifest lists that molecule, so the water
 in three proton transfers is fitted once.  A fragment it does not list is
@@ -119,9 +125,9 @@ def _unpaired(atoms) -> int:
     """`2S` for `atoms`: as stated on it, or the lowest the electron count allows.
 
     A molecule entry states it -- from its SMILES radicals, or explicitly -- and
-    it is set on the atoms before they are fitted.  A reaction's combined
-    geometry does not carry one, so it falls back to the parity of the electron
-    count, which is right for every closed-shell channel.
+    it is set on the atoms before they are fitted; a reaction's frames carry
+    theirs from `reaction.frame_spins`.  Anything else falls back to the parity
+    of the electron count, which is right for every closed-shell system.
     """
     if "spin" in atoms.info:
         return int(atoms.info["spin"])
@@ -190,7 +196,11 @@ def calculator_factory(spec: dict):
 # fit_config keys that are not `FitConfig` fields
 RUN_KEYS = ("calculator", "workdir", "embed_seed", "eps")
 MOLECULE_KEYS = ("id", "smiles", "path", "spin")
-REACTION_KEYS = ("id", "smiles", "path", "frames", "amplitude")
+REACTION_KEYS = ("id", "smiles", "path", "frames", "amplitude", "spin")
+REACTION_KEYS += ("spin_r", "spin_ts", "spin_p")
+# Per-frame spin keys of a reaction entry, and the frame kind each one sets.
+# `spin` sets all three and these override it.
+FRAME_SPIN_KEYS = {"spin_r": "reactant", "spin_ts": "transition", "spin_p": "product"}
 
 
 @dataclass
@@ -207,6 +217,8 @@ class Entry:
     key: tuple | None = None
     # reactions: the fully mapped SMILES `map_atoms` produced
     mapped: str | None = None
+    # reactions: `2S` per frame kind, resolved by `_frame_spins`
+    spins: dict | None = None
 
     @property
     def label(self) -> str:
@@ -245,6 +257,9 @@ class Manifest:
             lines.append(f"  {entry.label} -> {_relative(entry.output, self.root)}{note}")
             if entry.mapped and entry.mapped != entry.smiles:
                 lines.append(f"      mapped as {entry.mapped}")
+            if entry.spins is not None:
+                shown = ", ".join(f"{k} {v}" for k, v in entry.spins.items())
+                lines.append(f"      2S: {shown}")
         return "\n".join(lines)
 
 
@@ -296,6 +311,55 @@ def _entries(raw: list, kind: str, allowed, root: Path, workdir: Path) -> list:
     return entries
 
 
+def _checked_spin(entry: Entry, key: str, electrons: int) -> int:
+    """`entry.options[key]` as a `2S` the electron count allows."""
+    value = entry.options[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ManifestError(
+            f"{entry.label}: {key!r} is 2S, a non-negative integer; got {value!r}"
+        )
+    if (electrons - value) % 2:
+        raise ManifestError(
+            f"{entry.label}: {key!r} = {value} is impossible with {electrons} "
+            f"electrons -- 2S has the parity of the electron count"
+        )
+    return value
+
+
+def _electrons(smiles: str) -> int:
+    from rdkit import Chem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    return sum(a.GetAtomicNum() - a.GetFormalCharge() for a in mol.GetAtoms())
+
+
+def _frame_spins(entry: Entry, reaction) -> dict:
+    """A reaction entry's `2S` per frame kind: its `spin*` keys over the default.
+
+    The default is `Reaction.spin`, every reactant radical high-spin coupled.  A
+    fission has only its reactant frame -- `fit_twobody` walks the diabats apart
+    instead of searching for a saddle -- so a transition-state or product spin
+    on one would be silently dropped, and is refused instead.
+    """
+    electrons = int(reaction.numbers.sum()) - reaction.charge
+    spins = {}
+    if "spin" in entry.options:
+        value = _checked_spin(entry, "spin", electrons)
+        spins = dict.fromkeys(reaction_module.FRAME_KINDS, value)
+    for key, kind in FRAME_SPIN_KEYS.items():
+        if key in entry.options:
+            spins[kind] = _checked_spin(entry, key, electrons)
+    channel, _ = reaction.channel()
+    stray = [k for k in ("spin_ts", "spin_p") if k in entry.options]
+    if channel == "fission" and stray:
+        raise ManifestError(
+            f"{entry.label}: a fission is fitted from its reactant frame alone, so "
+            f"{stray} would set the spin of a frame that is never computed; use "
+            "'spin' or 'spin_r'"
+        )
+    return reaction_module.frame_spins(reaction, spins)
+
+
 def load(path) -> Manifest:
     """Read and validate a manifest, without fitting anything."""
     path = Path(path).resolve()
@@ -332,12 +396,15 @@ def load(path) -> Manifest:
 
     for entry in molecules:
         entry.key = molecule_key(entry.smiles)
+        if "spin" in entry.options:
+            _checked_spin(entry, "spin", _electrons(entry.smiles))
     for entry in reactions:
         try:
             entry.mapped = reaction_module.map_atoms(entry.smiles)
-            reaction_module.parse(entry.mapped)
+            parsed = reaction_module.parse(entry.mapped)
         except reaction_module.ReactionError as error:
             raise ManifestError(f"{entry.label}: {error}") from error
+        entry.spins = _frame_spins(entry, parsed)
 
     meta = {
         k: v
@@ -427,6 +494,13 @@ def fit_molecule(manifest: Manifest, entry: Entry, calc_factory, method: str):
         }
     else:
         if training.exists():
+            cached = io.read_training_set(str(training)).meta.get("spin")
+            if cached is not None and int(cached) != atoms.info["spin"]:
+                raise ManifestError(
+                    f"{entry.label}: the training set {training} was computed at "
+                    f"2S={cached}, not the {atoms.info['spin']} asked for; delete "
+                    "it to regenerate"
+                )
             params = ff.fit_from_file(str(training), config=manifest.config)
         else:
             training.parent.mkdir(parents=True, exist_ok=True)
@@ -483,6 +557,19 @@ def _supplied_frames(entry: Entry, reaction):
             )
         if frame.calc is None or "energy" not in frame.calc.results:
             raise ManifestError(f"{entry.label}: {path} carries no reference energies")
+    # A frame computed at one spin is not reused for another.  One without a
+    # stated spin was computed at whatever the calculator fell back to.
+    for frame, kind in zip(frames, reaction_module.FRAME_KINDS):
+        found, wanted = _unpaired(frame), entry.spins[kind]
+        if found != wanted:
+            if "frames" in entry.options:
+                source = "a file the manifest names"
+            else:
+                source = "a cached training set; delete it to regenerate"
+            raise ManifestError(
+                f"{entry.label}: the {kind} frame in {path} is at 2S={found}, not "
+                f"the {wanted} asked for ({source})"
+            )
     return frames
 
 
@@ -502,6 +589,7 @@ def fit_reaction(manifest: Manifest, entry: Entry, calc_factory, fitted: dict):
         amplitude=entry.options.get("amplitude"),
         fragments=fitted,
         frames=frames,
+        spins=entry.spins,
     )
     if frames is None:
         cache = _file(entry.training, ".xyz")

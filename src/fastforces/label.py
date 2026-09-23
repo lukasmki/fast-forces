@@ -19,10 +19,10 @@ SinglePointCalculator in eV and written to an extxyz file.
 from __future__ import annotations
 
 import json
-from argparse import ArgumentParser
 from pathlib import Path
-from typing import cast
+from typing import Annotated, cast
 
+import typer
 from ase import Atoms, io, units
 from ase.calculators.singlepoint import SinglePointCalculator
 
@@ -140,83 +140,91 @@ def atom_energy(
     return energy
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = ArgumentParser(prog="fast-forces label", description=__doc__)
-    parser.add_argument("-i", "--input", type=Path, required=True)
-    parser.add_argument("-o", "--output", type=Path, required=True)
-    parser.add_argument("-b", "--basis", default="cc-pvtz")
-    parser.add_argument(
-        "-c",
-        "--charge",
-        type=int,
-        default=0,
-        help="Total charge, applied to every structure in the input.",
-    )
-    parser.add_argument(
-        "-s",
-        "--spin",
-        type=int,
-        default=0,
-        help="Number of unpaired electrons (2S = n_alpha - n_beta), applied to "
-        "every structure in the input. Note this is not the multiplicity.",
-    )
-    parser.add_argument(
-        "--atom-cache",
-        type=Path,
-        default=None,
-        help="JSON file used to persist free-atom energies between runs.",
-    )
-    parser.add_argument("--grid-level", type=int, default=3)
-    parser.add_argument("--nlc-grid-level", type=int, default=1)
-    parser.add_argument(
-        "--density-fit",
-        action="store_true",
-        help="Use RI/density fitting for the two-electron integrals (faster, "
-        "introduces a small fitting error).",
-    )
-    parser.add_argument("--nthreads", type=int, default=None)
-    parser.add_argument(
-        "-v", "--verbose", type=int, default=0, help="PySCF verbosity level."
-    )
-    args = parser.parse_args(argv)
-
-    if args.nthreads is not None:
-        lib.num_threads(args.nthreads)
+def main(
+    input: Annotated[
+        Path,
+        typer.Option(
+            "-i", "--input", exists=True, dir_okay=False, help="Structures to label."
+        ),
+    ],
+    output: Annotated[
+        Path, typer.Option("-o", "--output", help="Labelled extxyz output.")
+    ],
+    basis: Annotated[str, typer.Option("-b", "--basis")] = "cc-pvtz",
+    charge: Annotated[
+        int,
+        typer.Option(
+            "-c",
+            "--charge",
+            help="Total charge, applied to every structure in the input.",
+        ),
+    ] = 0,
+    spin: Annotated[
+        int,
+        typer.Option(
+            "-s",
+            "--spin",
+            help="Number of unpaired electrons (2S = n_alpha - n_beta), applied "
+            "to every structure in the input. Note this is not the multiplicity.",
+        ),
+    ] = 0,
+    atom_cache_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--atom-cache",
+            help="JSON file used to persist free-atom energies between runs.",
+        ),
+    ] = None,
+    grid_level: int = 3,
+    nlc_grid_level: int = 1,
+    density_fit: Annotated[
+        bool,
+        typer.Option(
+            "--density-fit",
+            help="Use RI/density fitting for the two-electron integrals (faster, "
+            "introduces a small fitting error).",
+        ),
+    ] = False,
+    nthreads: int | None = None,
+    verbose: Annotated[
+        int, typer.Option("-v", "--verbose", help="PySCF verbosity level.")
+    ] = 0,
+) -> None:
+    if nthreads is not None:
+        lib.num_threads(nthreads)
 
     atom_cache: dict[str, float] = {}
-    if args.atom_cache is not None and args.atom_cache.exists():
-        atom_cache = json.loads(args.atom_cache.read_text())
+    if atom_cache_path is not None and atom_cache_path.exists():
+        atom_cache = json.loads(atom_cache_path.read_text())
 
-    atoms: list[Atoms] = cast(list[Atoms], io.read(args.input, index=":"))
+    atoms: list[Atoms] = cast(list[Atoms], io.read(input, index=":"))
 
     # Write incrementally so a crash halfway through does not lose everything.
-    args.output.unlink(missing_ok=True)
+    output.unlink(missing_ok=True)
 
     for i, at in enumerate(atoms):
-        mol = ase_to_pyscf(
-            at, args.basis, charge=args.charge, spin=args.spin, verbose=args.verbose
-        )
+        mol = ase_to_pyscf(at, basis, charge=charge, spin=spin, verbose=verbose)
 
-        e_mol = _run_scf(mol, args.grid_level, args.nlc_grid_level, args.density_fit)
+        e_mol = _run_scf(mol, grid_level, nlc_grid_level, density_fit)
 
         e_atoms = sum(
             atom_energy(
                 symbol,
-                args.basis,
+                basis,
                 atom_cache,
-                args.grid_level,
-                args.nlc_grid_level,
-                args.density_fit,
-                args.verbose,
+                grid_level,
+                nlc_grid_level,
+                density_fit,
+                verbose,
             )
             for symbol in at.get_chemical_symbols()
         )
 
         e_atomization = (e_mol - e_atoms) * units.Hartree  # eV
 
-        at.info["method"] = f"{XC}/{args.basis}"
-        at.info["charge"] = args.charge
-        at.info["spin"] = args.spin
+        at.info["method"] = f"{XC}/{basis}"
+        at.info["charge"] = charge
+        at.info["spin"] = spin
         at.calc = SinglePointCalculator(at, energy=e_atomization)
 
         print(
@@ -225,12 +233,11 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
 
-        io.write(args.output, at, format="extxyz", append=i > 0)
+        io.write(output, at, format="extxyz", append=i > 0)
 
-        if args.atom_cache is not None:
-            args.atom_cache.write_text(json.dumps(atom_cache, indent=2))
-    return 0
+        if atom_cache_path is not None:
+            atom_cache_path.write_text(json.dumps(atom_cache, indent=2))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    typer.run(main)
