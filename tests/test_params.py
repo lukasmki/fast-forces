@@ -38,13 +38,13 @@ def example_params():
 
 def test_jsonl_round_trip_reproduces_the_example():
     rows = example_rows()
-    rebuilt = Parameters.from_rows(rows, numbers=[6, 6, 7, 1, 1, 1]).to_rows()
+    rebuilt = Parameters.from_terms(rows, numbers=[6, 6, 7, 1, 1, 1]).to_terms()
     assert len(rebuilt) == len(rows)
     for original, produced in zip(rows, rebuilt, strict=True):
         assert produced["type"] == original["type"]
         assert produced["atoms"] == original["atoms"]
         for key, value in original["kwargs"].items():
-            assert produced["kwargs"][key] == pytest.approx(value, rel=1e-12, abs=1e-12)
+            assert produced["kwargs"][key] == value
 
 
 def test_round_trip_through_a_file(tmp_path):
@@ -59,12 +59,12 @@ def test_round_trip_through_a_file(tmp_path):
 
 
 def test_units_convert_to_physical_values():
-    """Spot-check the table DynamicTopology reads the files with."""
-    assert units.from_disk("bond", "r0", 0.11433) == pytest.approx(1.1433)
-    assert units.from_disk("bond", "D", 680.6783954015332) == pytest.approx(
+    """Spot-check the table q-force imports and OpenMM exports convert with."""
+    assert units.from_openmm("bond", "r0", 0.11433) == pytest.approx(1.1433)
+    assert units.from_openmm("bond", "D", 680.6783954015332) == pytest.approx(
         7.0548, abs=1e-4
     )
-    # ACKS2 parameters are the exception: both formats carry them in eV/Angstrom
+    # ACKS2 parameters are the exception: neither q-force nor OpenMM states them
     assert units.factor("atom", "mu") == 1.0
     assert units.factor("atom", "soft_decay") == 1.0
 

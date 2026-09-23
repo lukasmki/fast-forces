@@ -19,7 +19,7 @@ DynamicTopology's `src/DynamicTopology/forcefield/REFERENCE.md`.
 
 - Uses any ASE calculator: Fit to MLIPs, QM codes, TBLite, etc! any calculator that provides energies/forces
 - Automatic conformer generation using `openconf`: You only need a SMILES string and a reference method to get a fully parameterized force field
-- Writes DynamicTopology datasets directly (`.jsonl` in nm and kJ/mol, as DynamicTopology's `io.units` converts them), and exports to OpenMM
+- Writes DynamicTopology datasets directly (`.jsonl` in eV and Å, the units DynamicTopology holds them in), and exports to OpenMM
 - Use the included FastForces calculator to immediately start running simulations
 - All training data is saved into one extended XYZ file: Everything necessary to reproduce the fit is contained in one file
 - Two electrostatics models: ACKS2 charge equilibration, whose charges are re-solved at every geometry, or fixed point charges taken from the reference calculation's Mulliken populations (`FitConfig(electrostatics="fixed")`, DynamicTopology's `pointcharge`)

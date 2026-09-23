@@ -268,8 +268,10 @@ fast-forces import-qforce
 
    fast-forces import-qforce -i qforce_xml_dir/ -o molecules/
 
-Reads q-force's OpenMM-style ``<Forces>`` XML into ``.jsonl`` term rows, in
-q-force's own units (nm, kJ/mol), which are also the units ``.jsonl`` stores.
+Reads q-force's OpenMM-style ``<Forces>`` XML into ``.jsonl`` term rows. q-force
+states its parameters in nm and kJ/mol, and the import converts them to the eV
+and Å a ``.jsonl`` stores. A parameter with no recorded unit is refused, not
+passed through.
 Forces with unnamed parameters are dropped, q-force's ``Coulomb`` among them.
 The 12-6 comes out as q-force's ``A``/``B`` rather than ``sigma``/``eps``. An
 imported file is therefore a starting point for ``refit``, not a finished

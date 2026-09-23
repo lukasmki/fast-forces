@@ -115,9 +115,9 @@ stored = coupling_module.Coupling.from_jsonl(str(REFERENCE / "h3o-h2o-transfer.j
 amplitude = float(stored.terms["threebody"]["kwargs"]["A"][0])
 refit = coupling_module.fit_threebody(frames, water.channel()[1], amplitude=amplitude)
 
-print(f"\n  stored   {stored.to_rows()[0]['kwargs']}")
-print(f"  refitted {refit.to_rows()[0]['kwargs']}")
-print(f"  identical: {refit.to_rows()[0]['kwargs'] == stored.to_rows()[0]['kwargs']}")
+print(f"\n  stored   {stored.to_terms()[0]['kwargs']}")
+print(f"  refitted {refit.to_terms()[0]['kwargs']}")
+print(f"  identical: {refit.to_terms()[0]['kwargs'] == stored.to_terms()[0]['kwargs']}")
 print(
     f"\n  V(reactant)   {refit.value(frames[0].get_positions()):+.6f} eV"
     f"   <- quenched to eps by construction"

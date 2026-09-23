@@ -2,8 +2,9 @@ Fitting a molecule
 ==================
 
 Everything in memory is in ASE units: positions in Å, energies in eV, forces in
-eV/Å. Only the ``.jsonl`` files on disk use nm and kJ/mol, and the conversion
-happens on read and write, inside DynamicTopology's ``io.units``.
+eV/Å, and so are the ``.jsonl`` files on disk, which are read and written
+without conversion. nm and kJ/mol appear only at the q-force import and the
+OpenMM export, which convert through DynamicTopology's ``io.units``.
 
 From SMILES to a force field
 ----------------------------
@@ -179,14 +180,14 @@ Saving and exporting
 
 .. code-block:: python
 
-   params.to_jsonl("acetonitrile.jsonl")        # DynamicTopology's format (nm, kJ/mol)
+   params.to_jsonl("acetonitrile.jsonl")        # DynamicTopology's format (eV, Å)
    params = ff.Parameters.from_jsonl("acetonitrile.jsonl")
 
    # needs `uv sync --extra openmm`
    params.to_openmm_xml("acetonitrile.xml", positions=atoms.get_positions())
    system = params.to_openmm_system(positions=atoms.get_positions())
 
-``positions`` fixes the geometry the ACKS2 charges are frozen at in the OpenMM
+The OpenMM export is in OpenMM's nm and kJ/mol. ``positions`` fixes the geometry the ACKS2 charges are frozen at in the OpenMM
 export. Without it, the exported system has no electrostatics.
 :meth:`~fastforces.params.Parameters.to_terms` gives the term list
 DynamicTopology holds in memory, for handing a field to it directly.

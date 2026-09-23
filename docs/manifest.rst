@@ -62,6 +62,8 @@ reaction      ``<path>.jsonl``                                the coupling
 reaction      ``<path>-reactant.jsonl``, ``-product.jsonl``   the two diabatic states
 ============  ==============================================  =========================================
 
+Every ``.jsonl`` is in eV and Å, the units DynamicTopology holds parameters in.
+
 The full training sets are written under ``fit_config.workdir``, mirroring the
 same paths. A rerun reuses them. A molecule whose training set exists is refit
 without calling the reference calculator, and a reaction whose stationary

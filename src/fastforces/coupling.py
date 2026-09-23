@@ -42,12 +42,9 @@ whose products lie uphill never cross along the transfer coordinate at all, so
 there is no degeneracy to centre anything on.  Such a channel has a real saddle
 and a real barrier instead, which is exactly the data `fit_amplitude` wants.
 
-**Units.** Like the ACKS2 `atom` block, and unlike every other term, coupling
-parameters are written to jsonl in the calculator's own units -- eV and
-Angstrom, unconverted.  That is what the reference files carry (`A` in eV, `ra0`
-in Angstrom) and `DynamicTopology.io.units` records it as a table of unit
-powers that are all zero, so the round trip is exact rather than merely
-consistent.
+**Units.** Like every other term, coupling parameters are written to jsonl in
+the calculator's own units -- eV and Angstrom, unconverted (`A` in eV, `ra0` in
+Angstrom) -- so the round trip is exact rather than merely consistent.
 """
 
 from dataclasses import dataclass, field
@@ -57,7 +54,6 @@ from ase import Atoms
 
 from DynamicTopology.forcefield.coupling import EVBCoupling, kabsch
 from DynamicTopology.io.json import read_jsonl, write_jsonl
-from DynamicTopology.io.units import term_from_disk, term_to_disk
 
 from .params import block_to_terms, terms_to_blocks
 
@@ -137,15 +133,8 @@ class Coupling:
                 out.append(row)
         return out
 
-    def to_rows(self) -> list[dict]:
-        return [term_to_disk(term) for term in self.to_terms()]
-
     def to_jsonl(self, path: str) -> None:
         write_jsonl(path, self.to_terms(), exist_ok=True)
-
-    @classmethod
-    def from_rows(cls, rows: list[dict], ensemble=None):
-        return cls.from_terms([term_from_disk(row) for row in rows], ensemble)
 
     @classmethod
     def from_terms(cls, terms: list[dict], ensemble=None):

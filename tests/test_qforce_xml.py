@@ -1,7 +1,9 @@
-"""q-force's XML imports into `.jsonl` rows, in the units q-force states them in."""
+"""q-force's XML imports into `.jsonl` rows, converted to eV and Angstrom."""
 
 import json
 from pathlib import Path
+
+from DynamicTopology.io.json import read_jsonl
 
 from fastforces.qforce_xml import convert, read_xml
 
@@ -21,12 +23,14 @@ def test_every_qforce_file_parses():
         ]
 
 
-def test_the_import_writes_q_force_s_own_numbers(tmp_path):
-    """No unit conversion: the file is already in the `.jsonl`'s nm and kJ/mol."""
+def test_the_import_writes_ev_and_angstrom(tmp_path):
+    """q-force states nm and kJ/mol; the `.jsonl` carries eV and Angstrom."""
     source = DATA / "h2o_qforce.xml"
     out = tmp_path / "h2o.jsonl"
     convert(source, out)
     rows = [json.loads(line) for line in out.read_text().splitlines() if line]
     assert rows == read_xml(source)
     bond = next(r for r in rows if r["type"] == "bond")
-    assert bond["kwargs"]["r0"] < 0.2  # nm, not Angstrom
+    assert 0.9 < bond["kwargs"]["r0"] < 1.0  # O-H in Angstrom, not nm
+    # And the file loads: DynamicTopology refuses a bond `r0` still in nm.
+    assert read_jsonl(out) == rows

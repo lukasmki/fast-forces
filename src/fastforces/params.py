@@ -11,16 +11,15 @@ single-topology sum `System` puts on a diabat -- so a template scores here
 exactly as it will in a simulation.  `to_terms` is the bridge: the same
 parameters as the term list DynamicTopology holds in memory.
 
-The two file formats are the `.jsonl` DynamicTopology loads, converted to nm and
-kJ/mol by `DynamicTopology.io.units` (the one table of what converts how), and
-an OpenMM System (`export.openmm`).
+The two file formats are the `.jsonl` DynamicTopology loads -- `to_terms`, one
+row per term, in the same eV and Angstrom -- and an OpenMM System
+(`export.openmm`), converted to nm and kJ/mol by `DynamicTopology.io.units`.
 """
 
 from dataclasses import dataclass, field
 
 import numpy as np
 from DynamicTopology.io.json import read_jsonl, write_jsonl
-from DynamicTopology.io.units import term_from_disk, term_to_disk
 
 # The two electrostatic terms, which are alternatives rather than additions:
 # `atom` is the ACKS2 per-atom block whose charges are re-solved at every
@@ -184,17 +183,8 @@ class Parameters:
     # DynamicTopology jsonl
     # ------------------------------------------------------------------
 
-    def to_rows(self) -> list[dict]:
-        """The `.jsonl` representation: one row per term, nm and kJ/mol."""
-        return [term_to_disk(term) for term in self.to_terms()]
-
     def to_jsonl(self, path: str) -> None:
         write_jsonl(path, self.to_terms(), exist_ok=True)
-
-    @classmethod
-    def from_rows(cls, rows: list[dict], numbers: np.ndarray | None = None):
-        """Invert `to_rows`, converting back to ASE units."""
-        return cls.from_terms([term_from_disk(row) for row in rows], numbers)
 
     @classmethod
     def from_terms(cls, terms: list[dict], numbers: np.ndarray | None = None):

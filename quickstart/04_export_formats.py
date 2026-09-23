@@ -1,8 +1,8 @@
 """04 -- Exporting: DynamicTopology jsonl and OpenMM XML.
 
-The same parameters go out in two formats, both in OpenMM units (nm, kJ/mol)
-while the runtime works in ASE units (Angstrom, eV).  A single conversion table
-backs both writers so they cannot drift apart.  The jsonl round-trips exactly;
+The same parameters go out in two formats: the jsonl in the ASE units
+(Angstrom, eV) the runtime works in, and OpenMM in its own (nm, kJ/mol), through
+DynamicTopology's single conversion table.  The jsonl round-trips exactly;
 the OpenMM system is checked by evaluating it with OpenMM's own engine and
 comparing against `FastForces`.
 
@@ -40,12 +40,12 @@ delta = max(
 )
 print(f"  round trip: max parameter difference {delta:.2e}\n")
 
-# `bond r0` is the clearest place to see the unit change: Angstrom inside,
-# nanometres on the way out.
+# `bond r0` is the clearest place to see the units: Angstrom inside and in the
+# jsonl, nanometres only on the way out to OpenMM.
 r0_internal = params.terms["bond"]["kwargs"]["r0"]
-r0_exported = [row["kwargs"]["r0"] for row in rows if row["type"] == "bond"]
-print(f"bond r0 internal (A) : {np.round(r0_internal, 4)}")
-print(f"bond r0 exported (nm): {np.round(r0_exported, 5)}\n")
+r0_jsonl = [row["kwargs"]["r0"] for row in rows if row["type"] == "bond"]
+print(f"bond r0 internal (A): {np.round(r0_internal, 4)}")
+print(f"bond r0 jsonl    (A): {np.round(r0_jsonl, 4)}\n")
 
 # ---------------------------------------------------------------- OpenMM
 try:

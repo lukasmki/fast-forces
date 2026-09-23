@@ -296,7 +296,7 @@ def test_the_surface_is_dynamictopology_s(reaction):
                 if not t["type"].endswith("exclusion")
             ]
             states.append(Parameters(numbers=ts.numbers, terms=terms_to_blocks(terms)))
-        coupling = Coupling.from_rows(rows)
+        coupling = Coupling.from_terms(rows)
 
         work = ts.copy()
         work.calc = EVB(work, states=states, coupling=coupling)

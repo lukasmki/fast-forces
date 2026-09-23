@@ -3,9 +3,11 @@
     fast-forces import-qforce -i qforce_xml_dir/ -o molecules/
 
 q-force writes a molecule's force field as OpenMM `Custom*Force` blocks with
-named per-term parameters.  This reads them into the `.jsonl` row format, in
-the units q-force states them in -- nm and kJ/mol, which is what a `.jsonl`
-stores -- so the rows are written without conversion.  Forces whose parameters
+named per-term parameters, in nm and kJ/mol.  This reads them into the `.jsonl`
+row format and converts them to the eV and Angstrom a `.jsonl` stores, through
+`DynamicTopology.io.units` -- the one place that conversion happens, so a
+parameter whose unit is not recorded there is refused rather than guessed at.
+Forces whose parameters
 are unnamed are dropped (q-force's own `Coulomb`, among them), and the 12-6 comes
 out as q-force's `A`/`B` rather than the `sigma`/`eps` the datasets carry, so an
 imported file is a starting point for `refine` and not a finished template.
@@ -22,6 +24,7 @@ import typer
 
 from DynamicTopology.core.types import Term
 from DynamicTopology.io.json import write_jsonl
+from DynamicTopology.io.units import term_from_openmm
 
 
 def read_xml(path: str | Path) -> list[Term]:
@@ -105,7 +108,7 @@ def read_xmls(data: str) -> list[Term]:
                 else:
                     idx = {k: int(v) for k, v in attrib.items()}
                 term: Term = {"type": name.lower(), "atoms": idx, "kwargs": args}
-                terms.append(term)
+                terms.append(term_from_openmm(term))
     return terms
 
 
@@ -125,23 +128,17 @@ def convert(input_path: Path, output_path: Path) -> None:
                 continue
             terms = read_xml(path)
             print(f"writing to {output_path / path.name}")
-            write_jsonl(
-                (output_path / path.name).with_suffix(".jsonl"), terms, convert=False
-            )
+            write_jsonl((output_path / path.name).with_suffix(".jsonl"), terms)
     else:
         print(f"reading from {input_path}")
         terms = read_xml(input_path)
         if output_path.is_dir():
             output_path.mkdir(parents=True, exist_ok=True)
             print(f"writing to {output_path / input_path.name}")
-            write_jsonl(
-                (output_path / input_path.name).with_suffix(".jsonl"),
-                terms,
-                convert=False,
-            )
+            write_jsonl((output_path / input_path.name).with_suffix(".jsonl"), terms)
         else:
             print(f"writing to {output_path}")
-            write_jsonl((output_path).with_suffix(".jsonl"), terms, convert=False)
+            write_jsonl((output_path).with_suffix(".jsonl"), terms)
 
 
 def main(

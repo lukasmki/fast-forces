@@ -51,7 +51,7 @@ def test_reproduces_the_reference_threebody_fit(reference_frames, reference_term
     fitted = C.fit_threebody(
         reference_frames, TRIPLE, amplitude=expected["kwargs"]["A"]
     )
-    row = fitted.to_rows()[0]
+    row = fitted.to_terms()[0]
     assert row["type"] == expected["type"]
     assert row["atoms"] == expected["atoms"]
     assert row["kwargs"] == expected["kwargs"]
