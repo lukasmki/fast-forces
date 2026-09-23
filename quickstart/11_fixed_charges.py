@@ -1,8 +1,9 @@
 """11 -- Fixed point charges instead of charge equilibration.
 
-`FitConfig(electrostatics="fixed")` swaps ACKS2 for the `coulomb` term: one
-charge per atom, carried as an ordinary parameter, summed over the same smeared
-`erf(2r)/r` kernel over the same pairs.  The two are alternatives rather than
+`FitConfig(electrostatics="fixed")` swaps ACKS2 for the `charge` term --
+DynamicTopology's `pointcharge` electrostatics: one charge per atom, carried as
+an ordinary parameter, summed over the same smeared `erf(2r)/r` kernel over the
+same pairs.  The two are alternatives rather than
 additions -- a field carries one or the other, and `Parameters.electrostatics()`
 is what says which -- so this is a different force field, not a reparametrized
 one.
@@ -24,46 +25,26 @@ import time
 from dataclasses import replace
 
 import numpy as np
-from ase.calculators.calculator import all_changes
-from tblite.ase import TBLite
 
 import fastforces as ff
+from DynamicTopology.forcefield.electrostatics import Electrostatics
+from DynamicTopology.forcefield.evaluate import surface
+from DynamicTopology.forcefield.ewald import Ewald
+from DynamicTopology.forcefield.params import active
+
+from fastforces.calculator import term_dict_for
+from fastforces.calculators.tblite import TBLiteCalculator
 from fastforces.export.openmm import exported_charges
-from fastforces.forcefield import electrostatic_evaluator
-from fastforces.forcefield.ewald import CCOUL, Ewald
 
 from _common import OUTPUT, banner
 
 banner(__doc__)
 
 
-class ChargedTBLite(TBLite):
-    """GFN2-xTB, with its partial charges left on the frame as `mulliken`.
-
-    `calculators.pyscf.PySCFCalculator` does this itself -- it has the density
-    matrix in hand anyway -- and the fit reads the array rather than asking a
-    calculator for it, so a reference method is not required to be PySCF.  This
-    is what any ASE calculator that reports `charges` needs to drive a
-    fixed-charge fit, and `sampling.label` carries whatever a calculator writes
-    onto a frame into the training file.
-
-    The array is named for Mulliken because that is what PySCF puts there; what
-    xTB reports is its own population analysis, which is a different
-    approximation to the same ill-defined quantity.  Neither is more correct
-    than the other, and that is the honest caveat about this whole term.
-    """
-
-    def calculate(self, atoms=None, properties=None, system_changes=all_changes):
-        super().calculate(atoms, properties or ["energy"], system_changes)
-        # The caller's object, not `self.atoms`: the array has to land on the
-        # frame `sampling.label` is about to freeze, the way PySCF writes its
-        # bond orders.
-        target = atoms if atoms is not None else self.atoms
-        target.set_array("mulliken", np.asarray(self.results["charges"], float), float)
-
-
 def charged_gfn2(atoms=None):
-    return ChargedTBLite(method="GFN2-xTB", verbosity=0)
+    # Writes xTB's charges onto each frame as `mulliken`, as PySCFCalculator
+    # does -- what a manifest's `tblite` calculator builds, too.
+    return TBLiteCalculator(method="GFN2-xTB", verbosity=0)
 
 
 # Methanol: a hydroxyl, a methyl rotor, and enough polarity for the
@@ -83,7 +64,7 @@ fixed = ff.fit_from_file(str(path), config=replace(config, electrostatics="fixed
 
 print(f"{atoms.get_chemical_formula()} from {path.name}: {data.summary()}\n")
 for name, params in (("acks2", acks2), ("fixed", fixed)):
-    absent = next(t for t in ("atom", "coulomb") if t not in params.terms)
+    absent = next(t for t in ("atom", "charge") if t not in params.terms)
     print(
         f"  {name:6s} electrostatics() -> {params.electrostatics()!r:10s} "
         f"and no {absent!r} block at all"
@@ -94,7 +75,7 @@ for name, params in (("acks2", acks2), ("fixed", fixed)):
 # ---------------------------------------------------------------------
 print("\n" + "-" * 68)
 raw = data.equilibrium.get_array("mulliken")
-q = np.asarray(fixed.terms["coulomb"]["kwargs"]["q"])
+q = np.asarray(fixed.terms["charge"]["kwargs"]["q"])
 classes = ff.enumerate_terms(
     data.equilibrium, ff.perceive(data.equilibrium)
 ).atom_classes
@@ -115,7 +96,8 @@ puts {spreads[worst]:.3f} e between the widest pair of them.  Freezing that asym
 would give a rotor with no electrostatic torsion a spurious one, which the
 relaxed torsion scans in the training set would then have to fight.  A
 class-wise mean moves no charge between classes, so the total is preserved
-exactly -- the condition `forcefield/ewald.py` needs of it.
+exactly -- the template carries its formal charge, as DynamicTopology's point
+charges need it to.
 
 Neither field's charges are *fitted*.  Both are part of the fixed baseline the
 bonded terms are fit against, which is the point example 06 makes about `r0`:
@@ -168,13 +150,13 @@ def per_call(work, frames, repeats=5):
 
 
 def term_only(params):
-    """Just the electrostatic evaluator, called the way the calculator calls it."""
-    evaluator = electrostatic_evaluator(params)
+    """Just the electrostatic term, called the way DynamicTopology calls it."""
+    evaluator = Electrostatics()
+    td = term_dict_for(params)
 
     def work(frame):
-        return evaluator(
-            frame.get_positions(), frame.pbc, np.array(frame.cell), params.terms
-        )
+        with surface(td):
+            return evaluator(frame.get_positions(), frame.pbc, np.array(frame.cell), td)
 
     return work
 
@@ -208,22 +190,22 @@ for name, params in (("acks2", acks2), ("fixed", fixed)):
 energy_ratio = fixed.report["energy_rmse_eV"] / acks2.report["energy_rmse_eV"]
 force_ratio = fixed.report["force_rmse_eV_A"] / acks2.report["force_rmse_eV_A"]
 print(f"""
-The two fits land in the same ballpark rather than on top of each other: the
-fixed-charge field is {energy_ratio:.1f}x the energy RMSE and {force_ratio:.1f}x the force RMSE of the
-ACKS2 one here.  Since neither term is fitted, what that difference measures is
-the *baseline*, not the fit -- how much of the reference's electrostatics was
-already accounted for before the bonded block started work, and therefore how
-much of it the bonded block had to absorb.  `tests/test_fit.py` asserts a
-fixed-charge fit stays within 2x of the ACKS2 one for exactly that reason.
+The two fits are {energy_ratio:.2f}x and {force_ratio:.2f}x of each other -- the same fit.  That is
+not a coincidence of this training set.  Methanol's fifteen atom pairs are all
+within three bonds of each other, and DynamicTopology excludes every such pair
+from the electrostatics, so *within* this molecule neither term contributes
+anything: the two baselines are identical, and so is everything fitted against
+them.  The choice of term decides what happens between molecules and across a
+reaction -- where fixed charges move with a proton and ACKS2's cannot -- and it
+reaches a single molecule's fit only through pairs four or more bonds apart.
 
-What it rests on is that each field was fit against the term it is evaluated
-with.  Fit against ACKS2 and evaluate with fixed charges and every force
-constant is off by the difference, which is why `fit._nonbonded` asks
-`Parameters.electrostatics()` rather than assuming, and why refitting with the
-other setting produces a different force field rather than a reparametrized
-one.
+What that rests on is that each field is fit against the term it is evaluated
+with.  Fit against ACKS2 and evaluate with fixed charges and, in a molecule that
+has such pairs, every force constant is off by the difference, which is why
+`fit._nonbonded` scores through DynamicTopology's `evaluate`, which picks the
+term from the block the field carries rather than assuming.
 
-The term itself is {cost["acks2"][0] / cost["fixed"][0]:.0f}x cheaper: a pair sum with no `2n+2` solve in front
+The term itself is {cost["acks2"][0] / cost["fixed"][0]:.1f}x cheaper: a pair sum with no `2n+2` solve in front
 of it and no adjoint behind it.  The whole field is only {cost["acks2"][1] / cost["fixed"][1]:.2f}x cheaper, because
 on a six-atom molecule the bonded block is most of the work -- but the solve is
 the piece that scales worst, so that ratio is a floor rather than the number to
@@ -244,7 +226,7 @@ fixed.to_jsonl(str(jsonl))
 restored = ff.as_parameters(str(jsonl))
 print(
     f"\nwrote {jsonl.name}; read back -> {restored.electrostatics()!r}, charges "
-    f"preserved: {np.allclose(restored.terms['coulomb']['kwargs']['q'], q)}"
+    f"preserved: {np.allclose(restored.terms['charge']['kwargs']['q'], q)}"
 )
 
 print("""
@@ -254,10 +236,9 @@ at the geometry passed in and baking them in: an exported system that drifts
 from the calculator it came from as the geometry moves, and one that cannot be
 written at all without a geometry to solve at -- hence the `None` above.  Fixed
 charges have nothing to bake, because the exported `erf(beta*r)/r` force *is*
-the term.  That is the third and deciding reason `forcefield/coulomb.py` smears
-its kernel instead of using a bare `1/r`: the exported system has always had
-this form, and a term with a different kernel would export to something that is
-not itself.""")
+the term.  That is one reason DynamicTopology's point charges use the smeared
+kernel rather than a bare `1/r`: a term with a different kernel would export to
+something that is not itself.""")
 
 # ---------------------------------------------------------------------
 # a charged cell, and what it costs
@@ -270,7 +251,7 @@ periodic.pbc = True
 # The same field with a proton's worth of charge spread over it: an ion, and
 # nothing about the term objects.
 ion = copy.deepcopy(fixed)
-ion.terms["coulomb"]["kwargs"]["q"] = q + 1.0 / len(q)
+ion.terms["charge"]["kwargs"]["q"] = q + 1.0 / len(q)
 
 energies = {}
 for name, params in (("neutral", fixed), ("net +1 e", ion)):
@@ -279,7 +260,7 @@ for name, params in (("neutral", fixed), ("net +1 e", ion)):
 
 # What the `k = 0` background charges an ion, from the splitting the cell fixes.
 setup = Ewald(np.array(periodic.cell))
-background = 0.5 * CCOUL * setup.background * 1.0**2
+background = 0.5 * active().ccoul * setup.background * 1.0**2
 print(f"\n  the k=0 background at this cell   {background:+10.4f} eV")
 print(f"  difference, ion minus neutral    "
       f"{energies['net +1 e'] - energies['neutral']:+10.4f} eV")
@@ -297,17 +278,13 @@ cell can mean.  The number above is that term, `ccoul/2 * background * (sum q)^2
 -- a part of the difference between the two rows, not all of it, since shifting
 every charge also moves the contraction itself.
 
-The reason it had to come back is not ions at all.  The exclusions of section 5
-contract the kernel against a screened weight, and a screened weight does not
-sum to zero over a neutral system -- so each `K_ij` has to be well defined on
-its own, and a constant that "cancels anyway" no longer does.
+The reason it had to come back is not ions at all.  The exclusions contract the
+kernel against a non-neutral weight, so each `K_ij` has to be well defined on its
+own, and a constant that "cancels anyway" no longer does.
 
-One further limit, and it is why this example fits a molecule rather than a
-reaction: `reaction.state_parameters` refuses a fragment carrying fixed
-charges.  `EVB` evaluates electrostatics once for both states, which is exact
-for ACKS2 -- the charges equilibrate over whatever they are handed, so there is
-nothing state-specific about them -- and simply wrong for two fragments whose
-fixed charges differ on the two sides of a reaction.  Until electrostatics
-moves onto each state's diagonal, example 10's path stays on ACKS2.  Which is
-the trade in one line: fixed charges for a fixed topology, and charge
-equilibration for chemistry that changes one.""")
+Fixed charges also work for reactions.  DynamicTopology gives every template
+its own charges and puts each state's Coulomb energy on that state's diagonal,
+so a proton transfer carries its excess charge with the proton -- which ACKS2's
+single sum-zero constraint cannot do.  `reaction.state_parameters` scatters each
+side's fragment charges onto that side, and `EVB` evaluates each diabat under
+them, exactly as a DynamicTopology simulation of the same dataset would.""")

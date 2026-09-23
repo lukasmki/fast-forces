@@ -1,0 +1,6 @@
+{"type": "charge", "atoms": {"p0": 0}, "kwargs": {"q": 0.0}}
+{"type": "charge", "atoms": {"p0": 1}, "kwargs": {"q": 0.0}}
+{"type": "lennardjones", "atoms": {"p0": 0}, "kwargs": {"sigma": 0.196, "eps": 0.184}}
+{"type": "lennardjones", "atoms": {"p0": 1}, "kwargs": {"sigma": 0.196, "eps": 0.184}}
+{"type": "bond", "atoms": {"p1": 0, "p2": 1}, "kwargs": {"r0": 0.0776651033470346, "k": 250528.623142593, "D": 207.27972436214}}
+{"type": "reference", "atoms": {"a1": 0}, "kwargs": {"E0": -2372.76582796878}}

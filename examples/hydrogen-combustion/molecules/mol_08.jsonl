@@ -1,0 +1,3 @@
+{"type": "charge", "atoms": {"p0": 0}, "kwargs": {"q": 0.0}}
+{"type": "lennardjones", "atoms": {"p0": 0}, "kwargs": {"sigma": 0.196, "eps": 0.184}}
+{"type": "reference", "atoms": {"a1": 0}, "kwargs": {"E0": -1033.08884232123}}

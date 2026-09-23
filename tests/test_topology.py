@@ -74,8 +74,15 @@ def test_exclusions_cover_1_2_1_3_and_1_4():
     top = enumerate_terms(atoms)
     # acetonitrile is small enough that every pair is within three bonds -- the
     # longest path, H-C-C#N, is exactly a 1-4
-    off_diagonal = ~np.eye(len(atoms), dtype=bool)
-    assert np.all(top.exclusions[off_diagonal])
+    from DynamicTopology.forcefield.exclusions import exclusion_terms
+
+    excluded = {
+        tuple(sorted(t["atoms"].values()))
+        for t in exclusion_terms([], atoms.numbers, graph=top.graph)
+        if t["type"] == "zblexclusion"
+    }
+    n = len(atoms)
+    assert excluded == {(i, j) for i in range(n) for j in range(i + 1, n)}
 
 
 def test_perceive_prefers_stored_connectivity():

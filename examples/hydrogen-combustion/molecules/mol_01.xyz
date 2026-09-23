@@ -1,0 +1,4 @@
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[H][H]" connectivity="_JSON [[0.0, 1.0, 1.0]]" spin=0 method=GFN2-xTB frame_kind=equilibrium charge=0 fit_config="{\"temperature\": 500.0, \"n_mode_frames\": 40, \"n_conformers\": 20, \"torsion_step_deg\": 15.0, \"hessian_delta\": 0.01, \"fmax\": 0.001, \"energy_weight\": null, \"regularization\": 0.001, \"seed\": 0, \"bond_form\": \"morse\", \"electrostatics\": \"fixed\", \"n_cycles\": 200, \"cycle_tol\": 0.0001}" energy=-26.740252837664595 pbc="F F F"
+H        0.38834877       0.00000000       0.00000000      -0.00000000       0.00003183      -0.00000000      -0.00000000
+H       -0.38834877       0.00000000       0.00000000       0.00000000      -0.00003183      -0.00000000      -0.00000000

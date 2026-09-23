@@ -11,9 +11,11 @@ too.  Recovering every force constant is therefore one bounded least-squares
 solve rather than a nonlinear optimization.
 
 The basis functions `g_c` are not re-derived here.  They are obtained by calling
-`QForce`'s own `compute_*` methods with `k = 1`, which returns exactly
-`(g_c, -dg_c/dR)`.  That keeps the fit and the runtime evaluator the same code:
-a term cannot be fit under one functional form and evaluated under another.
+DynamicTopology's own `QForce.compute_*` methods with `k = 1`, which returns
+exactly `(g_c, -dg_c/dR)`.  That keeps the fit and the simulation the same
+code: a term cannot be fit under one functional form and evaluated under
+another.  The nonbonded baseline goes through `DynamicTopology.forcefield.
+evaluate` for the same reason.
 
 `E0` is not in that solve, and is not in any solve.  Every energy residual in
 the fit is mean-centered, so a constant shift of the whole profile costs nothing
@@ -32,12 +34,17 @@ Bonds are the exception to the linearity, and are fit in a separate nonlinear
 block.  Two reasons, and both are forced:
 
   * The Morse exponent is `sqrt(k / 2D)`, so a Morse bond is not linear in `k`.
+    Its per-bond asymptote `h` is *not* fitted here: it only lifts the
+    stretched branch far out, which near-equilibrium training frames cannot
+    see, so a bond fitted here reads the dataset's `bond_asymptote`.  `h` is a
+    dataset-level quantity, fitted against the reaction barriers by
+    `refine.fit_force_constants`.
   * `r0` cannot be read off the equilibrium geometry.  It is an effective
     parameter that balances whatever nonbonded baseline survives on the atoms
     the bond connects, not a measurement of the bond length -- so it is fit,
     inside bounds taken from the measured geometry, rather than fixed at it.
     How much balancing there is to do depends on the exclusions: within a
-    molecule small enough that every pair is inside `EXCLUSION_DEPTH` there is
+    molecule small enough that every pair is inside `exclusion_depth` there is
     none left and `r0` lands near the true length, while a pair that survives
     the exclusion still carries ~20 eV/A of ZBL against a reference force of
     zero and has to be pre-compressed against it.  The example force field is
@@ -72,11 +79,13 @@ from os import PathLike
 import numpy as np
 from scipy.optimize import least_squares, lsq_linear
 
+from ase import Atoms
+from DynamicTopology.forcefield.evaluate import evaluate_term_dict, term_dict
+from DynamicTopology.forcefield.exclusions import exclusion_terms
+from DynamicTopology.forcefield.qforce import QForce
+
 from . import elements
-from .forcefield import electrostatic_evaluator, exclusions
-from .forcefield.lj import LennardJones
-from .forcefield.qforce import QForce
-from .forcefield.zbl import ZBL
+from .charges import class_average
 from .params import ELECTROSTATIC_TERMS, Parameters
 from .topology import Topology
 
@@ -108,8 +117,9 @@ GEOMETRIC: dict[str, dict[str, tuple[str, tuple[int, ...]]]] = {
 POSITIVE_K = ("angle",)
 
 # The bond parameters the nonlinear block refines, in the order they are packed
-# into its parameter vector.
-_BOND_NAMES: tuple[str, ...] = ("r0", "k", "D", "c")
+# into its parameter vector.  `h` is deliberately absent; see the module
+# docstring.
+_BOND_NAMES: tuple[str, ...] = ("r0", "k", "D")
 
 
 @dataclass
@@ -128,8 +138,9 @@ class FitConfig:
     bond_form: str = "morse"
     # Which electrostatic term the fitted field carries.  `"acks2"` is the
     # `atom` block, with the charges re-solved at every geometry from element
-    # defaults; `"fixed"` is the `coulomb` block, with one charge per atom taken
-    # from the reference calculation's Mulliken populations.  Neither is fitted
+    # defaults; `"fixed"` is the `charge` block, with one charge per atom taken
+    # from the reference calculation's Mulliken populations, evaluated under
+    # DynamicTopology's `global_params.electrostatics = "pointcharge"`.  Neither is fitted
     # -- both are part of the baseline the bonded terms are fit against -- so
     # this changes what that baseline is, and a field refit with the other
     # setting is a different force field rather than a reparametrized one.
@@ -295,7 +306,7 @@ def _seed_from(topology: Topology, initial: Parameters, n_atoms: int) -> _Seed:
                 f"initial `{term}` parameters index atom {int(atoms.max())}, but "
                 f"this training set has {n_atoms} atoms -- different molecule?"
             )
-        if term in ("atom", "coulomb", "lennardjones"):
+        if term in ("atom", "charge", "lennardjones"):
             seed.nonbonded[term] = block
             seed.n_seeded += len(atoms)
             continue
@@ -433,12 +444,13 @@ def _basis_columns(topology, values, qforce, vecs, skip=("bond",)):
     return np.array(energies), np.array(forces), labels
 
 
-def _coulomb_block(topology: Topology, equilibrium) -> dict:
+def _charge_block(topology: Topology, equilibrium) -> dict:
     """The fixed-charge electrostatic block, read off the reference frame.
 
     The charges are the `mulliken` array that
-    `calculators.pyscf.PySCFCalculator` writes onto every frame it evaluates
-    and `io.write_training_set` carries into the training file.  They are read
+    `calculators.pyscf.PySCFCalculator` and `calculators.tblite.TBLiteCalculator`
+    write onto every frame they evaluate and `io.write_training_set` carries
+    into the training file.  They are read
     from the *equilibrium* frame, the same frame every other fixed value in this
     fit is measured on, and they are not fit afterwards -- see
     `FitConfig.electrostatics`.
@@ -448,90 +460,59 @@ def _coulomb_block(topology: Topology, equilibrium) -> dict:
     group get three slightly different values, and freezing that asymmetry in
     would put a spurious electrostatic torsion on a rotor that has none.  Every
     other parameter in this fit is per-class for the same reason.  A class-wise
-    mean also leaves the total charge exactly where it was, which is what
-    `forcefield/ewald.py` needs of it.
+    mean also leaves the total charge exactly where it was, so the template
+    carries its formal charge, as DynamicTopology's point charges need.
     """
     if "mulliken" not in equilibrium.arrays:
         raise ValueError(
             "fitting with `electrostatics='fixed'` needs per-atom charges, and "
             "this training set carries none: the equilibrium frame has no "
             "`mulliken` array.  It is written by "
-            "`calculators.pyscf.PySCFCalculator`, so a set sampled with an "
-            "older version of it has to be re-sampled, or the fit has to run "
-            "with `electrostatics='acks2'`"
+            "`calculators.pyscf.PySCFCalculator` and "
+            "`calculators.tblite.TBLiteCalculator` (a manifest's `tblite`), so "
+            "a set sampled with plain `tblite.ase.TBLite` or an older version "
+            "of either has to be re-sampled, or the fit has to run with "
+            "`electrostatics='acks2'`"
         )
     raw = np.asarray(equilibrium.get_array("mulliken"), dtype=float)
-    classes = np.asarray(topology.atom_classes, dtype=int)
-    counts = np.bincount(classes)
-    totals = np.bincount(classes, weights=raw)
-    q = (totals / counts)[classes]
+    q = class_average(raw, topology.atom_classes)
     return {"atoms": np.arange(len(raw))[:, None], "kwargs": {"q": q}}
 
 
-def _nonbonded(params, frames):
+def _nonbonded(params, frames, graph):
     """Energies and forces of the fixed nonbonded baseline, per frame.
 
-    All three pair sums run over every pair, bonded ones included, and
-    `forcefield/exclusions.py` then takes the 1-2/1-3/1-4 part back off --
-    exactly as `FastForces` evaluates them, which is what this has to be.  What
-    survives the exclusion at a bond length is part of the baseline the bonded
-    fit has to absorb, which is the bargain `ZBL` and the switched 12-6 both
-    make.
+    DynamicTopology's own single-topology sum over the nonbonded blocks alone:
+    the whole-system `ZBL`, switched 12-6 and electrostatics, with the
+    1-2/1-3/1-4 part taken back off by the exclusion terms it derives from
+    `graph` -- the topology being fitted, whose bond *parameters* do not exist
+    yet.  What survives the exclusion at a bond length is part of the baseline
+    the bonded fit has to absorb, which is the bargain `ZBL` and the switched
+    12-6 both make.
 
-    **Both halves have to be here, and they have to be these halves.**  This is
-    the number the bonded residuals are taken against, so an exclusion applied
-    here and not in the calculator -- or the other way round -- lands in every
-    fitted force constant as a silent offset.  It goes through the same
-    functions `FastForces` calls for the same reason the electrostatic term is
-    chosen by the same factory: fit against one and evaluate with the other and
-    the difference is in the parameters, not in an error message.
+    **It has to be exactly the sum the simulation evaluates.**  This is the
+    number the bonded residuals are taken against, so an exclusion applied here
+    and not there -- or the other way round -- lands in every fitted force
+    constant as a silent offset.  Going through `evaluate` is what rules that
+    out rather than merely checking it.
 
-    All three return a virial as well.  The fit works at fixed cell, so they are
-    dropped here rather than carried through unused.
+    The virial is dropped: the fit works at fixed cell.
     """
-    electrostatic = electrostatic_evaluator(params)
-    lj = LennardJones()
-    zbl = ZBL()
-    has_lj = "lennardjones" in params.terms
-    mask = params.exclusions
-    term = params.electrostatics()
-
-    screen = None
-    if mask is not None and term is not None and exclusions.EXCLUDE_COULOMB:
-        indices = params.terms[term]["atoms"][:, 0]
-        screen = exclusions.screen(
-            [mask[np.ix_(indices, indices)]], [1.0], len(indices)
-        )
+    numbers = np.asarray(params.numbers)
+    terms = params.to_terms()
+    terms = terms + exclusion_terms(terms, numbers, graph=graph)
+    td = term_dict(Atoms(numbers=numbers), terms)
 
     energies, forces = [], []
     for frame in frames:
-        pos = frame.get_positions()
-        pbc, cell = frame.pbc, np.array(frame.cell)
-        numbers = frame.get_atomic_numbers()
-        e1, f1, _ = (
-            electrostatic(pos, pbc, cell, params.terms, screen)
-            if electrostatic is not None
-            else (0.0, np.zeros_like(pos), None)
-        )
-        e2, f2, _ = (
-            lj(pos, pbc, cell, params.terms)
-            if has_lj
-            else (0.0, np.zeros_like(pos), None)
-        )
-        e3, f3, _ = zbl(pos, numbers, pbc, cell)
-        e4, f4 = 0.0, np.zeros_like(pos)
-        if mask is not None:
-            sigma, eps = exclusions.lj_parameters(params.terms, len(numbers))
-            e4, f4, _ = exclusions.additive(
-                pos, numbers, pbc, cell, mask, sigma, eps
-            )
-        energies.append(e1 + e2 + e3 + e4)
-        forces.append((f1 + f2 + f3 + f4).reshape(-1))
+        result = evaluate_term_dict(frame, td)
+        energies.append(result.energy)
+        forces.append(result.forces.reshape(-1))
     return np.array(energies), np.array(forces)
 
 
 def _bond_block(topology, qforce, all_vecs, shape):
-    """Energy and forces of every bond, from per-class `(r0, k, D, c)`."""
+    """Energy and forces of every bond, from per-class `(r0, k, D)`."""
     classes = topology.classes["bond"]
     atoms = topology.atoms["bond"]
     kwargs = {name: value[classes] for name, value in shape.items()}
@@ -585,13 +566,13 @@ def _solve_linear(a_energy, a_force, b_energy, b_force, labels, config, weight):
 def _refine_bonds(
     topology, qforce, all_vecs, shape, b_energy, b_force, weight, geometric_r0
 ):
-    """Nonlinear refine of `(r0, k, D, c)` per bond class, everything else fixed.
+    """Nonlinear refine of `(r0, k, D)` per bond class, everything else fixed.
 
     `r0` is bounded to a window around the geometric bond length rather than
     fixed at it: whatever nonbonded baseline survives the exclusions on a bonded
     pair has to be balanced somewhere, and this is where.  The window is wide
     downwards because that balancing can be large -- a pair outside
-    `EXCLUSION_DEPTH` carries ~20 eV/A of ZBL -- and a floor at half the
+    `exclusion_depth` carries ~20 eV/A of ZBL -- and a floor at half the
     measured length, because a bond that collapses to nothing is a fit artifact
     and not a force field.
     """
@@ -616,15 +597,14 @@ def _refine_bonds(
     # `r0` is allowed down to half the true bond length: fitted without
     # exclusions, an O-H bond compressed from 0.97 A to 0.70 A against the ZBL
     # it then had to balance, so a wide range is needed -- but a bond shorter
-    # than that has stopped describing a bond.  `c` spans the example's 14.8;
-    # `D` is capped well above any real dissociation energy because it can be
-    # absorbing part of the surviving repulsion, not just a bond.
+    # than that has stopped describing a bond.  `D` is capped well above any
+    # real dissociation energy because it can be absorbing part of the
+    # surviving repulsion, not just a bond.
     lower = np.concatenate(
         [
             0.5 * geometric_r0,
             np.full(n, 1.0),
             np.full(n, 0.25),
-            np.full(n, -50.0),
         ]
     )
     upper = np.concatenate(
@@ -632,7 +612,6 @@ def _refine_bonds(
             geometric_r0 + 0.5,
             np.full(n, 20000.0),
             np.full(n, 200.0),
-            np.full(n, 50.0),
         ]
     )
     x0 = np.clip(x0, lower + 1e-9, upper - 1e-9)
@@ -664,7 +643,7 @@ def fit(
     seed = None if initial is None else _seed_from(topology, initial, len(numbers))
 
     # --- nonbonded baseline, never fit -------------------------------------
-    params = Parameters(numbers=numbers, exclusions=topology.exclusions)
+    params = Parameters(numbers=numbers)
     index_column = np.arange(len(numbers))[:, None]
     defaults = elements.defaults_for(numbers, config.electrostatics)
     for term, kwargs in defaults.items():
@@ -672,11 +651,11 @@ def fit(
     if config.electrostatics == "fixed":
         # Not an element default, so it comes from the reference calculation
         # rather than from `elements`.
-        params.terms["coulomb"] = _coulomb_block(topology, equilibrium)
+        params.terms["charge"] = _charge_block(topology, equilibrium)
     if seed is not None:
         _apply_nonbonded(params, seed)
 
-    e_nb, f_nb = _nonbonded(params, frames)
+    e_nb, f_nb = _nonbonded(params, frames, topology.graph)
     b_energy = np.array([f.get_potential_energy() for f in frames]) - e_nb
     b_force = np.array([f.get_forces().reshape(-1) for f in frames]) - f_nb
 
@@ -717,7 +696,6 @@ def fit(
         "D": np.array(
             [well_depth[bond_classes == c][0] for c in range(n_bond_classes)]
         ),
-        "c": np.zeros(n_bond_classes),
     }
     if seed is not None:
         shape = {
@@ -862,14 +840,15 @@ def _assemble(params, topology, values, labels, k_values, e0, shape, bond_classe
 
 def _report(params, frames) -> dict:
     """Energy and force RMSE, overall and by frame kind."""
-    from .calculator import evaluate
+    from .calculator import term_dict_for
 
+    td = term_dict_for(params)
     per_kind: dict[str, list] = {}
     energy_errors, force_errors = [], []
     for frame in frames:
-        energy, forces = evaluate(frame, params)
-        de = energy - frame.get_potential_energy()
-        df = (forces - frame.get_forces()).reshape(-1)
+        result = evaluate_term_dict(frame, td)
+        de = result.energy - frame.get_potential_energy()
+        df = (result.forces - frame.get_forces()).reshape(-1)
         energy_errors.append(de)
         force_errors.append(df)
         per_kind.setdefault(frame.info.get("frame_kind", "unknown"), []).append(

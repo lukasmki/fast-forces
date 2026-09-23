@@ -30,7 +30,14 @@ for smiles in ("OO", "CC#N", "c1ccccc1C"):
         by_class.setdefault(int(cls), []).append(f"{atoms[index].symbol}{index}")
     print("  atom classes: " + " | ".join(",".join(v) for v in by_class.values()))
 
-    n_excluded = int(topology.exclusions.sum()) // 2
+    # DynamicTopology derives the exclusions from the bond graph, so they are a
+    # property of the topology and not something the force field file states.
+    from DynamicTopology.forcefield.exclusions import exclusion_terms
+
+    n_excluded = sum(
+        t["type"] == "zblexclusion"
+        for t in exclusion_terms([], atoms.numbers, graph=topology.graph)
+    )
     print(f"  nonbonded exclusions: {n_excluded} pairs (1-2, 1-3, 1-4)\n")
 
 print("""Sharing parameters across a class is what keeps the fit determined: a

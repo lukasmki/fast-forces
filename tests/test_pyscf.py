@@ -89,3 +89,38 @@ def test_the_manifest_labels_a_solvated_method():
         {"name": "pyscf", "xc": "PBE", "basis": "6-31g", "pcm": "IEF-PCM"}
     )
     assert label == "PBE/6-31g/IEF-PCM(eps=78.3553)"
+
+
+def test_perceived_bonds_are_the_bonded_pairs_with_integer_orders():
+    """Every pair has a positive Mayer bond order; a connectivity is the graph."""
+    from fastforces.calculators.pyscf import perceive_bonds
+
+    # HO2 at PBE/6-31G: O=O-ish, O-H, and a 0.02 O...H across the angle
+    bond_order = np.array(
+        [[0.0, 1.267, 0.022], [1.267, 0.0, 0.769], [0.022, 0.769, 0.0]]
+    )
+    assert perceive_bonds(bond_order) == [(0, 1, 1.0), (1, 2, 1.0)]
+
+
+def test_a_stated_connectivity_is_kept(hydroxide):
+    """The frame's topology is an input; the bond orders go to their own array."""
+    work = hydroxide.copy()
+    stated = [[0, 1, 1.0]]
+    work.info["connectivity"] = stated
+    work.calc = PySCFCalculator(charge=-1, spin=0, **CHEAP)
+    work.get_potential_energy()
+    assert work.info["connectivity"] is stated
+    assert work.arrays["bond-order"].shape == (2, 2)
+
+
+def test_a_perceived_connectivity_follows_the_geometry(hydroxide):
+    """Without one, it is perceived -- and re-perceived on the next call, so a
+    relaxation or an MD run sees a bond break."""
+    work = hydroxide.copy()
+    work.info.pop("connectivity", None)
+    work.calc = PySCFCalculator(charge=-1, spin=0, **CHEAP)
+    work.get_potential_energy()
+    assert [tuple(b[:2]) for b in work.info["connectivity"]] == [(0, 1)]
+    work.positions[1] += [4.0, 0.0, 0.0]
+    work.get_potential_energy()
+    assert work.info["connectivity"] == []

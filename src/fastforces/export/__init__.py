@@ -1,5 +1,5 @@
-"""Export of fitted parameters to the two supported force field formats."""
+"""Export of fitted parameters to OpenMM.
 
-from . import units
-
-__all__ = ["units"]
+The `.jsonl` format is DynamicTopology's own and is written by
+`Parameters.to_jsonl`; its unit conversion is `DynamicTopology.io.units`.
+"""

@@ -1,0 +1,292 @@
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=equilibrium charge=0 fit_config="{\"temperature\": 500.0, \"n_mode_frames\": 40, \"n_conformers\": 20, \"torsion_step_deg\": 15.0, \"hessian_delta\": 0.01, \"fmax\": 0.001, \"energy_weight\": null, \"regularization\": 0.001, \"seed\": 0, \"bond_form\": \"morse\", \"electrostatics\": \"fixed\", \"n_cycles\": 200, \"cycle_tol\": 0.0001}" energy=-120.50222134322622 pbc="F F F"
+O        0.48166337      -0.00000000       0.00000000      -0.33074335      -0.00007038       0.00000000      -0.00000000
+H       -0.48166337       0.00000000      -0.00000000       0.33074335       0.00007038      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=0 hessian_sign=1 hessian_delta=0.01 energy=-120.50004801169791 pbc="F F F"
+O        0.49166337      -0.00000000       0.00000000      -0.33067054      -0.42897473      -0.00000000       0.00000000
+H       -0.48166337       0.00000000      -0.00000000       0.33067054       0.42897473       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=0 hessian_sign=-1 hessian_delta=0.01 energy=-120.49993328837783 pbc="F F F"
+O        0.47166337      -0.00000000       0.00000000      -0.33081934       0.46374758      -0.00000000      -0.00000000
+H       -0.48166337       0.00000000      -0.00000000       0.33081934      -0.46374758       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=1 hessian_sign=1 hessian_delta=0.01 energy=-120.50222127893794 pbc="F F F"
+O        0.48166337       0.01000000       0.00000000      -0.33074296      -0.00238417      -0.00002475      -0.00000000
+H       -0.48166337       0.00000000      -0.00000000       0.33074296       0.00238417       0.00002475       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=1 hessian_sign=-1 hessian_delta=0.01 energy=-120.50222127893794 pbc="F F F"
+O        0.48166337      -0.01000000       0.00000000      -0.33074296      -0.00238417       0.00002475      -0.00000000
+H       -0.48166337       0.00000000      -0.00000000       0.33074296       0.00238417      -0.00002475       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=2 hessian_sign=1 hessian_delta=0.01 energy=-120.50222127893767 pbc="F F F"
+O        0.48166337      -0.00000000       0.01000000      -0.33074296      -0.00238417       0.00000000      -0.00002475
+H       -0.48166337       0.00000000      -0.00000000       0.33074296       0.00238417      -0.00000000       0.00002475
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=2 hessian_sign=-1 hessian_delta=0.01 energy=-120.50222127893808 pbc="F F F"
+O        0.48166337      -0.00000000      -0.01000000      -0.33074296      -0.00238417      -0.00000000       0.00002475
+H       -0.48166337       0.00000000      -0.00000000       0.33074296       0.00238417       0.00000000      -0.00002475
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=3 hessian_sign=1 hessian_delta=0.01 energy=-120.49993328837783 pbc="F F F"
+O        0.48166337      -0.00000000       0.00000000      -0.33081934       0.46374758      -0.00000000      -0.00000000
+H       -0.47166337       0.00000000      -0.00000000       0.33081934      -0.46374758       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=3 hessian_sign=-1 hessian_delta=0.01 energy=-120.50004801169791 pbc="F F F"
+O        0.48166337      -0.00000000       0.00000000      -0.33067054      -0.42897473      -0.00000000       0.00000000
+H       -0.49166337       0.00000000      -0.00000000       0.33067054       0.42897473       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=4 hessian_sign=1 hessian_delta=0.01 energy=-120.50222127893794 pbc="F F F"
+O        0.48166337      -0.00000000       0.00000000      -0.33074296      -0.00238417       0.00002475      -0.00000000
+H       -0.48166337       0.01000000      -0.00000000       0.33074296       0.00238417      -0.00002475       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=4 hessian_sign=-1 hessian_delta=0.01 energy=-120.50222127893794 pbc="F F F"
+O        0.48166337      -0.00000000       0.00000000      -0.33074296      -0.00238417      -0.00002475      -0.00000000
+H       -0.48166337      -0.01000000      -0.00000000       0.33074296       0.00238417       0.00002475       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=5 hessian_sign=1 hessian_delta=0.01 energy=-120.50222127893808 pbc="F F F"
+O        0.48166337      -0.00000000       0.00000000      -0.33074296      -0.00238417      -0.00000000       0.00002475
+H       -0.48166337       0.00000000       0.01000000       0.33074296       0.00238417       0.00000000      -0.00002475
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=hessian hessian_column=5 hessian_sign=-1 hessian_delta=0.01 energy=-120.50222127893767 pbc="F F F"
+O        0.48166337      -0.00000000       0.00000000      -0.33074296      -0.00238417       0.00000000      -0.00002475
+H       -0.48166337       0.00000000      -0.01000000       0.33074296       0.00238417      -0.00000000       0.00002475
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50188424678613 pbc="F F F"
+O        0.48189490      -0.00000000       0.00000000      -0.33071456      -0.17162279      -0.00000000      -0.00000000
+H       -0.48533817       0.00000000       0.00000000       0.33071456       0.17162279       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50184203294057 pbc="F F F"
+O        0.48142011      -0.00000000       0.00000000      -0.33077411       0.18592005      -0.00000000      -0.00000000
+H       -0.47780226       0.00000000      -0.00000000       0.33077411      -0.18592005       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49383391819394 pbc="F F F"
+O        0.48284268       0.00000000       0.00000000      -0.33060098      -0.82163065       0.00000000       0.00000000
+H       -0.50038140       0.00000000       0.00000000       0.33060098       0.82163065      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50198625145457 pbc="F F F"
+O        0.48185654      -0.00000000       0.00000000      -0.33071930      -0.14356253      -0.00000000       0.00000000
+H       -0.48472935       0.00000000       0.00000000       0.33071930       0.14356253       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49577030527293 pbc="F F F"
+O        0.48067696      -0.00000000       0.00000000      -0.33087189       0.79250796      -0.00000000       0.00000000
+H       -0.46600704       0.00000000      -0.00000000       0.33087189      -0.79250796       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49948714787165 pbc="F F F"
+O        0.48232923       0.00000000       0.00000000      -0.33066174      -0.47962739      -0.00000000       0.00000000
+H       -0.49223193       0.00000000       0.00000000       0.33066174       0.47962739       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.46920660447363 pbc="F F F"
+O        0.48406463       0.00000000      -0.00000000      -0.33046134      -1.54778818       0.00000000       0.00000000
+H       -0.51977618       0.00000000       0.00000000       0.33046134       1.54778818      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.48431638367708 pbc="F F F"
+O        0.48340738       0.00000000      -0.00000000      -0.33053579      -1.17186282      -0.00000000      -0.00000000
+H       -0.50934428       0.00000000       0.00000000       0.33053579       1.17186282       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49093029053584 pbc="F F F"
+O        0.48036748      -0.00000000       0.00000000      -0.33091450       1.06317624      -0.00000000      -0.00000000
+H       -0.46109487       0.00000000      -0.00000000       0.33091450      -1.06317624       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.46394376969427 pbc="F F F"
+O        0.47933316      -0.00000000       0.00000000      -0.33106644       2.05207565      -0.00000000       0.00000000
+H       -0.44467813       0.00000000      -0.00000000       0.33106644      -2.05207565       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49342381850282 pbc="F F F"
+O        0.48051564      -0.00000000       0.00000000      -0.33089395       0.93221827      -0.00000000       0.00000000
+H       -0.46344655       0.00000000      -0.00000000       0.33089395      -0.93221827       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50218460551807 pbc="F F F"
+O        0.48173947      -0.00000000       0.00000000      -0.33073383      -0.05703729       0.00000000      -0.00000000
+H       -0.48287123       0.00000000      -0.00000000       0.33073383       0.05703729      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.36055149259323 pbc="F F F"
+O        0.47738193      -0.00000000       0.00000000      -0.33140242       4.32605427      -0.00000000       0.00000000
+H       -0.41370828       0.00000000      -0.00000000       0.33140242      -4.32605427       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50117314400404 pbc="F F F"
+O        0.48126048      -0.00000000       0.00000000      -0.33079462       0.31125139       0.00000000      -0.00000000
+H       -0.47526861       0.00000000      -0.00000000       0.33079462      -0.31125139      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.46517656132484 pbc="F F F"
+O        0.47936908      -0.00000000       0.00000000      -0.33106090       2.01542388      -0.00000000       0.00000000
+H       -0.44524837       0.00000000      -0.00000000       0.33106090      -2.01542388       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.4899669965403 pbc="F F F"
+O        0.48031493      -0.00000000       0.00000000      -0.33092186       1.11023209      -0.00000000       0.00000000
+H       -0.46026095       0.00000000      -0.00000000       0.33092186      -1.11023209       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49555700066043 pbc="F F F"
+O        0.48066114      -0.00000000       0.00000000      -0.33087404       0.80607555      -0.00000000       0.00000000
+H       -0.46575598       0.00000000      -0.00000000       0.33087404      -0.80607555       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50001272536866 pbc="F F F"
+O        0.48108092      -0.00000000       0.00000000      -0.33081799       0.45541863      -0.00000000       0.00000000
+H       -0.47241867       0.00000000      -0.00000000       0.33081799      -0.45541863       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49869237884533 pbc="F F F"
+O        0.48242137       0.00000000       0.00000000      -0.33065071      -0.54272296      -0.00000000       0.00000000
+H       -0.49369435       0.00000000       0.00000000       0.33065071       0.54272296       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.4806873679299 pbc="F F F"
+O        0.48358311       0.00000000      -0.00000000      -0.33051577      -1.27561157      -0.00000000       0.00000000
+H       -0.51213355       0.00000000       0.00000000       0.33051577       1.27561157       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50186237130869 pbc="F F F"
+O        0.48142668      -0.00000000       0.00000000      -0.33077328       0.18081466       0.00000000      -0.00000000
+H       -0.47790661       0.00000000      -0.00000000       0.33077328      -0.18081466      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.46614203043822 pbc="F F F"
+O        0.48417965       0.00000000      -0.00000000      -0.33044841      -1.61026866       0.00000000       0.00000000
+H       -0.52160183       0.00000000       0.00000000       0.33044841       1.61026866      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49216554071852 pbc="F F F"
+O        0.48043845      -0.00000000       0.00000000      -0.33090462       1.00012879      -0.00000000       0.00000000
+H       -0.46222132       0.00000000      -0.00000000       0.33090462      -1.00012879       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49963542768347 pbc="F F F"
+O        0.48231066       0.00000000       0.00000000      -0.33066397      -0.46681668      -0.00000000       0.00000000
+H       -0.49193717       0.00000000       0.00000000       0.33066397       0.46681668       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.48587160237793 pbc="F F F"
+O        0.48332707       0.00000000      -0.00000000      -0.33054498      -1.12364029      -0.00000000       0.00000000
+H       -0.50806965       0.00000000       0.00000000       0.33054498       1.12364029       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50203232964502 pbc="F F F"
+O        0.48183649      -0.00000000       0.00000000      -0.33072178      -0.12883885      -0.00000000      -0.00000000
+H       -0.48441113       0.00000000       0.00000000       0.33072178       0.12883885       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.48957632211359 pbc="F F F"
+O        0.48029425      -0.00000000       0.00000000      -0.33092476       1.12884545      -0.00000000       0.00000000
+H       -0.45993267       0.00000000      -0.00000000       0.33092476      -1.12884545       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.4824948304069 pbc="F F F"
+O        0.47996606      -0.00000000       0.00000000      -0.33097164       1.43108155       0.00000000       0.00000000
+H       -0.45472354       0.00000000      -0.00000000       0.33097164      -1.43108155      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.497541464671 pbc="F F F"
+O        0.48082049      -0.00000000       0.00000000      -0.33085252       0.67067709      -0.00000000       0.00000000
+H       -0.46828514       0.00000000      -0.00000000       0.33085252      -0.67067709       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50119566130992 pbc="F F F"
+O        0.48206885       0.00000000       0.00000000      -0.33069323      -0.29710676      -0.00000000       0.00000000
+H       -0.48809915       0.00000000       0.00000000       0.33069323       0.29710676       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.47837751755338 pbc="F F F"
+O        0.47980421      -0.00000000       0.00000000      -0.33099531       1.58500382      -0.00000000       0.00000000
+H       -0.45215465       0.00000000      -0.00000000       0.33099531      -1.58500382       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50126403402739 pbc="F F F"
+O        0.48127818      -0.00000000       0.00000000      -0.33079233       0.29721798      -0.00000000      -0.00000000
+H       -0.47554967       0.00000000      -0.00000000       0.33079233      -0.29721798       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50166900449224 pbc="F F F"
+O        0.48137017      -0.00000000       0.00000000      -0.33078050       0.22484687       0.00000000       0.00000000
+H       -0.47700961       0.00000000      -0.00000000       0.33078050      -0.22484687      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.4961918186658 pbc="F F F"
+O        0.48265931       0.00000000       0.00000000      -0.33062249      -0.70215117      -0.00000000       0.00000000
+H       -0.49747100       0.00000000       0.00000000       0.33062249       0.70215117       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50124613976065 pbc="F F F"
+O        0.48205866       0.00000000       0.00000000      -0.33069447      -0.28983223       0.00000000       0.00000000
+H       -0.48793735       0.00000000       0.00000000       0.33069447       0.28983223      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49957910952166 pbc="F F F"
+O        0.48231777       0.00000000       0.00000000      -0.33066312      -0.47172702       0.00000000       0.00000000
+H       -0.49205007       0.00000000       0.00000000       0.33066312       0.47172702      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.49251545107923 pbc="F F F"
+O        0.48045938      -0.00000000       0.00000000      -0.33090172       0.98164757       0.00000000       0.00000000
+H       -0.46255352       0.00000000      -0.00000000       0.33090172      -0.98164757      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.50185628444204 pbc="F F F"
+O        0.48142469      -0.00000000       0.00000000      -0.33077353       0.18235712      -0.00000000      -0.00000000
+H       -0.47787508       0.00000000      -0.00000000       0.33077353      -0.18235712       0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.48979426921466 pbc="F F F"
+O        0.48310703       0.00000000       0.00000000      -0.33057028      -0.98884720       0.00000000       0.00000000
+H       -0.50457710       0.00000000       0.00000000       0.33057028       0.98884720      -0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=mode energy=-120.4595438028806 pbc="F F F"
+O        0.48441346       0.00000000      -0.00000000      -0.33042216      -1.73436282      -0.00000000       0.00000000
+H       -0.52531280       0.00000000       0.00000000       0.33042216       1.73436282       0.00000000      -0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000
+2
+Properties=species:S:1:pos:R:3:mulliken:R:1:forces:R:3 smiles="[OH]" connectivity="_JSON [[0, 1, 1.0]]" spin=1 method=GFN2-xTB frame_kind=conformer energy=-120.49610420724076 pbc="F F F"
+O        0.49012733       0.00000000       0.00000000      -0.33062163      -0.70700940       0.00000000      -0.00000000
+H       -0.49012733       0.00000000       0.00000000       0.33062163       0.70700940      -0.00000000       0.00000000

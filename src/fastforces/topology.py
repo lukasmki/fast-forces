@@ -16,7 +16,6 @@ import networkx as nx
 import numpy as np
 from ase import Atoms
 
-from .forcefield.exclusions import EXCLUSION_DEPTH
 
 # The periodic series carried by every dihedral term.  Order and phase follow
 # the example file: descending `n`, with `phi0 = pi` for even `n` and `0` for
@@ -96,7 +95,6 @@ class Topology:
     classes: dict[str, np.ndarray] = field(default_factory=dict)
     fixed: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     class_keys: dict[str, list] = field(default_factory=dict)
-    exclusions: np.ndarray | None = None
 
     def n_classes(self, term_type: str) -> int:
         return len(self.class_keys.get(term_type, ()))
@@ -248,25 +246,6 @@ def _pack(
     return atoms, classes, unique, fixed
 
 
-def exclusion_mask(
-    graph: nx.Graph, n_atoms: int, depth: int = EXCLUSION_DEPTH
-) -> np.ndarray:
-    """Boolean mask, True for pairs within `depth` bonds (1-2, 1-3, 1-4).
-
-    This is the mask `forcefield/exclusions.py` takes off all three whole-system
-    pair sums, so the depth is that module's and is imported rather than
-    restated -- a topology that excluded to a different depth than the
-    evaluators do would leave the difference in the energy with nothing to
-    cancel it.
-    """
-    mask = np.zeros((n_atoms, n_atoms), dtype=bool)
-    for i, reachable in nx.all_pairs_shortest_path_length(graph, cutoff=depth):
-        for j in reachable:
-            if i != j:
-                mask[i, j] = True
-    return mask
-
-
 def enumerate_terms(atoms: Atoms, graph: nx.Graph | None = None) -> Topology:
     """Every term of the force field for `atoms`, with parameter-sharing classes."""
     graph = perceive(atoms) if graph is None else graph
@@ -318,7 +297,6 @@ def enumerate_terms(atoms: Atoms, graph: nx.Graph | None = None) -> Topology:
         numbers=numbers,
         graph=graph,
         atom_classes=atom_classes,
-        exclusions=exclusion_mask(graph, len(atoms)),
     )
     for term_type, entries in raw.items():
         if not entries:

@@ -1,0 +1,67 @@
+<System openmmVersion="8.1" type="System" version="1">
+  <PeriodicBoxVectors>
+    <A x="20.0" y="0" z="0" />
+    <B x="0" y="20.0" z="0" />
+    <C x="0" y="0" z="20.0" />
+  </PeriodicBoxVectors>
+  <Particles>
+    <Particle mass="15.9994" />
+    <Particle mass="15.9994" />
+  </Particles>
+  <Constraints />
+  <Forces>
+    <Force type="NonbondedForce" name="Coulomb" forceGroup="0" alpha="0" dispersionCorrection="0" ewaldTolerance=".0005" exceptionsUsePeriodic="0" includeDirectSpace="1" ljAlpha="0" ljnx="0" ljny="0" ljnz="0" method="1" nx="0" ny="0" nz="0" recipForceGroup="-1" rfDielectric="78.3" switchingDistance="-1" useSwitchingFunction="0" version="4" cutoff="20.0">
+      <GlobalParameters />
+      <ParticleOffsets />
+      <ExceptionOffsets />
+      <Particles>
+        <Particle q="0.0" eps="0" sig="0" />
+        <Particle q="0.0" eps="0" sig="0" />
+      </Particles>
+      <Exceptions>
+        <Exception p1="0" p2="1" q="0" eps="0" sig="0" />
+      </Exceptions>
+      <Functions />
+      <InteractionGroups />
+    </Force>
+    <Force energy="4*B*(A12/r12-A6/r6); r12=r6*r6; r6=r^6; A12=A6*A6; A6=A^6; B=sqrt(B1*B2); A=sqrt(A1*A2)" type="CustomNonbondedForce" forceGroup="0" name="LennardJones" switchingDistance="0" method="1" useLongRangeCorrection="0" useSwitchingFunction="0" version="3" cutoff="20.0">
+      <PerParticleParameters>
+        <Parameter name="A" />
+        <Parameter name="B" />
+      </PerParticleParameters>
+      <GlobalParameters />
+      <ComputedValues />
+      <EnergyParameterDerivatives />
+      <Particles>
+        <Particle param1="0.296" param2="0.71128" />
+        <Particle param1="0.296" param2="0.71128" />
+      </Particles>
+      <Exclusions>
+        <Exclusion p1="0" p2="1" />
+      </Exclusions>
+      <Functions />
+      <InteractionGroups />
+    </Force>
+    <Force energy="4*B*(A12/r12-A6/r6); r12=r6*r6; r6=r^6; A12=A6*A6; A6=A^6" name="LennardJones14" usesPeriodic="0" type="CustomBondForce" forceGroup="0" version="3">
+      <PerBondParameters>
+        <Parameter name="A" />
+        <Parameter name="B" />
+      </PerBondParameters>
+      <GlobalParameters />
+      <EnergyParameterDerivatives />
+      <Bonds />
+    </Force>
+    <Force energy="D*(1-exp(-b*(r-r0)))^2; b = sqrt(k/(2*D))" name="Bond" usesPeriodic="0" type="CustomBondForce" forceGroup="0" version="3">
+      <PerBondParameters>
+        <Parameter name="r0" />
+        <Parameter name="k" />
+        <Parameter name="D" />
+      </PerBondParameters>
+      <GlobalParameters />
+      <EnergyParameterDerivatives />
+      <Bonds>
+        <Bond p1="0" p2="1" param1="0.120953956" param2="754437.906" param3="498.0" />
+      </Bonds>
+    </Force>
+  </Forces>
+</System>

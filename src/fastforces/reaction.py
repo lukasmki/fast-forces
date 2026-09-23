@@ -242,34 +242,46 @@ class Reaction:
         form needs -- see `coupling`'s module docstring, which is where the
         three forms are argued.
         """
-        broken, formed = self.broken, self.formed
+        return classify(self.reactant_bonds, self.product_bonds, len(self))
 
-        if len(broken) == 1 and len(formed) == 1:
-            gone, made = next(iter(broken)), next(iter(formed))
-            shared = gone & made
-            if len(shared) == 1:
-                moving = next(iter(shared))
-                return "transfer", (
-                    next(iter(gone - shared)),
-                    moving,
-                    next(iter(made - shared)),
-                )
 
-        if len(broken) == 1 and not formed:
-            changed, separated = next(iter(broken)), self.product_bonds
-        elif len(formed) == 1 and not broken:
-            changed, separated = next(iter(formed)), self.reactant_bonds
-        else:
-            return "rmsd", None
+def classify(
+    reactant_bonds: frozenset, product_bonds: frozenset, n: int
+) -> tuple[str, tuple | None]:
+    """`Reaction.channel` for any two bond sets over the same `n` atoms.
 
-        first, second = sorted(changed)
-        moving = _component(separated, len(self), second)
-        if first in moving:
-            # Both ends stay in one piece, so cutting this bond separates
-            # nothing: a ring opening, which keeps a saddle and takes the RMSD
-            # route rather than the crossing-centred one.
-            return "rmsd", None
-        return "fission", ((first, second), tuple(sorted(moving)))
+    Bonds are `frozenset({i, j})` pairs.  Shared with `refit`, which classifies
+    a dataset's reactions from their endpoint frames rather than from a SMILES.
+    """
+    broken = reactant_bonds - product_bonds
+    formed = product_bonds - reactant_bonds
+
+    if len(broken) == 1 and len(formed) == 1:
+        gone, made = next(iter(broken)), next(iter(formed))
+        shared = gone & made
+        if len(shared) == 1:
+            moving = next(iter(shared))
+            return "transfer", (
+                next(iter(gone - shared)),
+                moving,
+                next(iter(made - shared)),
+            )
+
+    if len(broken) == 1 and not formed:
+        changed, separated = next(iter(broken)), product_bonds
+    elif len(formed) == 1 and not broken:
+        changed, separated = next(iter(formed)), reactant_bonds
+    else:
+        return "rmsd", None
+
+    first, second = sorted(changed)
+    moving = _component(separated, n, second)
+    if first in moving:
+        # Both ends stay in one piece, so cutting this bond separates nothing:
+        # a ring opening, which keeps a saddle and takes the RMSD route rather
+        # than the crossing-centred one.
+        return "rmsd", None
+    return "fission", ((first, second), tuple(sorted(moving)))
 
 
 def _component(bonds: frozenset, n: int, start: int) -> set:
@@ -984,8 +996,17 @@ def _mapping(fragment: Fragment, built: Atoms) -> np.ndarray:
     existing sampler stays valid -- while the merge uses the canonical one.
     """
     from molify import ase2rdkit
+    from rdkit import Chem
 
-    match = ase2rdkit(built).GetSubstructMatch(fragment.mol, useChirality=False)
+    # `ase2rdkit` fills every atom's valence with implicit hydrogens, so a
+    # radical comes back closed-shell -- `[OH]` as water's oxygen, `[O]` and
+    # `[H]` as water and H2 -- and RDKit will not match an atom with no radical
+    # electrons onto one with some.  The match is only there to line up atoms
+    # the graph already identifies, so the radicals are left out of it.
+    query = Chem.RWMol(fragment.mol)
+    for atom in query.GetAtoms():
+        atom.SetNumRadicalElectrons(0)
+    match = ase2rdkit(built).GetSubstructMatch(query, useChirality=False)
     if len(match) != fragment.mol.GetNumAtoms():
         raise ReactionError(
             f"could not match the built conformer of {fragment.smiles!r} onto the "
@@ -1041,7 +1062,11 @@ def fit_fragments(
                 continue
             built = build(fragment.smiles, seed=seed)
             if len(built) < 2:
-                out[fragment.key] = (built, _lone_atom(built, calc_factory))
+                electrostatics = (config.electrostatics if config else "acks2")
+                out[fragment.key] = (
+                    built,
+                    _lone_atom(built, calc_factory, electrostatics=electrostatics),
+                )
                 continue
             training = Path(workdir) / f"{_stem(fragment)}.xyz"
             training.parent.mkdir(parents=True, exist_ok=True)
@@ -1052,7 +1077,12 @@ def fit_fragments(
     return out
 
 
-def _lone_atom(atoms: Atoms, calc_factory, frame: Atoms | None = None) -> Parameters:
+def _lone_atom(
+    atoms: Atoms,
+    calc_factory,
+    frame: Atoms | None = None,
+    electrostatics: str = "acks2",
+) -> Parameters:
     """The force field of a single atom, which has nothing to fit.
 
     A monatomic fragment -- the leaving halide of an SN2, a bare proton -- has
@@ -1069,18 +1099,29 @@ def _lone_atom(atoms: Atoms, calc_factory, frame: Atoms | None = None) -> Parame
 
     `frame` is `atoms` already labelled as `"equilibrium"`, for a caller that
     wants to keep it; without one, `atoms` is labelled here.
+
+    Under `electrostatics="fixed"` the atom carries its formal charge as its
+    `charge` -- the only charge a lone atom can have, and what lets a halide
+    leave an SN2 carrying the -1 the fixed-charge surface puts on it.
     """
+    import networkx as nx
+
     from . import elements
     from .fit import _nonbonded
 
     params = Parameters(numbers=atoms.get_atomic_numbers())
     index_column = np.arange(len(atoms))[:, None]
-    for term, kwargs in elements.defaults_for(params.numbers).items():
+    for term, kwargs in elements.defaults_for(params.numbers, electrostatics).items():
         params.terms[term] = {"atoms": index_column.copy(), "kwargs": dict(kwargs)}
+    if electrostatics == "fixed":
+        params.terms["charge"] = {
+            "atoms": index_column.copy(),
+            "kwargs": {"q": np.asarray(atoms.get_initial_charges(), dtype=float)},
+        }
 
     if frame is None:
         frame = sampling.label(atoms, calc_factory, "equilibrium")
-    baseline, _ = _nonbonded(params, [frame])
+    baseline, _ = _nonbonded(params, [frame], nx.empty_graph(len(atoms)))
     e0 = float(frame.get_potential_energy() - baseline[0])
     params.terms["reference"] = {
         "atoms": np.zeros((1, 1), dtype=int),
@@ -1111,49 +1152,56 @@ def state_parameters(reaction: Reaction, side: str, fitted: dict) -> Parameters:
     which side it came from.  What is *not* the same is the energy they add:
     ACKS2 equilibrates over whatever system it is handed, so the combined value
     is not the sum of the fragments'.  That difference is identical in both
-    states -- the nonbonded terms have no topology -- so it cancels exactly in
+    states -- the ACKS2 charges have no topology -- so it cancels exactly in
     the diabatic gap, and what it leaves in the mean is absorbed by the fitted
     coupling amplitude, which is fitted against these very diagonals.
 
-    **Fixed charges are refused here, deliberately.**  That last argument is
-    what breaks: a `coulomb` block is not an element default that can be
-    rebuilt, and the fragments' Mulliken charges *are* molecular, so the two
-    sides of a reaction genuinely carry different ones.  Electrostatics would
-    then belong on each state's diagonal rather than in
-    `evb._whole_system`, which is a change to how `EVB` and
-    `coupling.fit` are structured and not a change to this function.  Until
-    that is designed, a fragment fitted with `electrostatics='fixed'` is
-    rejected rather than silently given ACKS2's charges or one side's.
+    **Fixed charges are the exception, and are carried per side.**  A `charge`
+    block is not an element default: the fragments' charges are molecular, so
+    the two sides of a proton transfer genuinely carry different ones -- which
+    is the point of them, since that is how the excess charge moves with the
+    proton.  DynamicTopology evaluates exactly that (each template its own
+    charges, on the diagonal), so the fragments' blocks are scattered onto the
+    combined indices like every bonded term.  Every fragment of a side has to
+    carry them, or none: a side half on ACKS2 and half on fixed charges has no
+    single `global_params.electrostatics` to be evaluated under.
 
     `E0` is summed: it is a constant per molecule, so a system of several is
-    their sum.
+    their sum.  The exclusions are not built here: DynamicTopology derives them
+    from each side's `bond` terms when it evaluates the state.
     """
     from . import elements
-    from .topology import enumerate_terms, perceive
 
     numbers = reaction.numbers
     params = Parameters(numbers=numbers)
     index_column = np.arange(len(numbers))[:, None]
-    for term, kwargs in elements.defaults_for(numbers).items():
+    fragments = list(reaction.fragments(side))
+    for fragment in fragments:
+        if fragment.key not in fitted:
+            raise ReactionError(f"no force field was fitted for {fragment.smiles!r}")
+    fixed = {"charge" in fitted[f.key][1].terms for f in fragments}
+    if len(fixed) > 1:
+        raise ReactionError(
+            f"the {side} fragments disagree about their electrostatics: some "
+            "carry fixed `charge` terms and some ACKS2, and a state is evaluated "
+            "under one.  Refit them with the same `FitConfig.electrostatics`"
+        )
+    fixed_charges = fixed == {True}
+
+    defaults = elements.defaults_for(
+        numbers, "fixed" if fixed_charges else "acks2"
+    )
+    for term, kwargs in defaults.items():
         params.terms[term] = {"atoms": index_column.copy(), "kwargs": dict(kwargs)}
 
     collected: dict[str, dict] = {}
     e0 = 0.0
-    for fragment in reaction.fragments(side):
-        if fragment.key not in fitted:
-            raise ReactionError(f"no force field was fitted for {fragment.smiles!r}")
+    for fragment in fragments:
         built, fragment_params = fitted[fragment.key]
-        if "coulomb" in fragment_params.terms:
-            raise ReactionError(
-                f"the force field for {fragment.smiles!r} carries fixed "
-                "`coulomb` charges, which the EVB path does not support yet -- "
-                "see `state_parameters`.  Refit the fragments with "
-                "`FitConfig(electrostatics='acks2')`"
-            )
         mapping = _mapping(fragment, built)
         e0 += fragment_params.e0
         for term, block in fragment_params.terms.items():
-            if term in ("atom", "coulomb", "lennardjones", "reference"):
+            if term in ("atom", "lennardjones", "reference"):
                 continue
             entry = collected.setdefault(term, {"atoms": [], "kwargs": {}})
             entry["atoms"].append(mapping[np.asarray(block["atoms"])])
@@ -1171,10 +1219,6 @@ def state_parameters(reaction: Reaction, side: str, fitted: dict) -> Parameters:
         "atoms": np.zeros((1, 1), dtype=int),
         "kwargs": {"E0": np.array([e0])},
     }
-
-    frame = Atoms(numbers=numbers, positions=np.zeros((len(numbers), 3)))
-    frame.info["connectivity"] = reaction.connectivity(side)
-    params.exclusions = enumerate_terms(frame, perceive(frame)).exclusions
     return params
 
 
@@ -1225,15 +1269,15 @@ class ReactionParameters:
         and are the honest test -- the coupling has quenched to `eps` there by
         construction, so what is left is the diabatic force fields alone.
         """
-        from .evb import EVB, diabatic_energies
-
         out = {"reference": [], "evb": [], "diabatic": []}
+        calc = self.calculator()
         for frame in self.frames:
             work = frame.copy()
-            work.calc = EVB(work, states=self.state_list, coupling=self.coupling)
+            work.calc = calc
             out["reference"].append(float(frame.get_potential_energy()))
             out["evb"].append(float(work.get_potential_energy()))
-            out["diabatic"].append(diabatic_energies(frame, self.state_list))
+            # The Hamiltonian's diagonal is each state's own energy, unmixed.
+            out["diabatic"].append(tuple(map(float, np.diag(calc.results["hamiltonian"]))))
         return out
 
     def report(self) -> str:

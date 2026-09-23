@@ -3,37 +3,48 @@
 The states here are built by hand rather than fitted, for the reason
 `test_reaction`'s own synthetic fields give: a fit would make every number
 plausible and none of them diagnostic.  Two one-bond states over three atoms are
-enough to exercise everything the calculator does.
+enough to exercise everything the calculator does -- and because each state's
+exclusions are derived from its own bond, the two exclude *different* pairs,
+which is the case the Coulomb exclusion's per-state treatment exists for.
+
+The last test holds the whole thing to DynamicTopology's `System` on a real
+dataset's reaction, which is the claim `evb`'s module docstring makes.
 """
 
-import networkx as nx
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
-from ase import Atoms
+from ase import Atoms, io
 
 from fastforces import elements
 from fastforces.coupling import Coupling
-from fastforces.evb import EVB, diabatic_energies
-from fastforces.forcefield import exclusions
-from fastforces.params import Parameters
-from fastforces.topology import exclusion_mask
+from fastforces.evb import EVB, diabatic_energies, diabatic_forces
+from fastforces.params import Parameters, terms_to_blocks
 
 NUMBERS = [8, 1, 8]
+WATER = Path(__file__).resolve().parents[2] / "DynamicTopo" / "datasets" / "Water"
 
 
-def _state(bond, e0=-1.5):
+def _state(bond, e0=-1.5, charges=None):
     params = Parameters(numbers=np.asarray(NUMBERS))
     column = np.arange(len(NUMBERS))[:, None]
-    for term, kwargs in elements.defaults_for(params.numbers).items():
+    fixed = charges is not None
+    defaults = elements.defaults_for(params.numbers, "fixed" if fixed else "acks2")
+    for term, kwargs in defaults.items():
         params.terms[term] = {"atoms": column.copy(), "kwargs": dict(kwargs)}
+    if fixed:
+        params.terms["charge"] = {
+            "atoms": column.copy(),
+            "kwargs": {"q": np.asarray(charges, dtype=float)},
+        }
     params.terms["bond"] = {
         "atoms": np.array([bond]),
         "kwargs": {
             "r0": np.array([0.98]),
             "k": np.array([40.0]),
             "D": np.array([5.0]),
-            "c": np.array([0.0]),
-            "b": np.array([4.0]),
         },
     }
     params.terms["reference"] = {
@@ -74,30 +85,32 @@ def states():
     return [_state([0, 1]), _state([2, 1])]
 
 
-def _excluded_state(bond, e0=-1.5):
-    """One state, carrying the exclusion mask of its own single bond.
-
-    The two states then exclude *different* pairs, which is the case the whole
-    of section 5.2 exists for and the only one where the screen has anything to
-    collapse.
-    """
-    params = _state(bond, e0)
-    graph = nx.Graph()
-    graph.add_nodes_from(range(len(NUMBERS)))
-    graph.add_edge(*bond)
-    params.exclusions = exclusion_mask(graph, len(NUMBERS))
-    return params
-
-
 @pytest.fixture
-def excluded_states():
-    return [_excluded_state([0, 1]), _excluded_state([2, 1])]
+def charged_states():
+    """A proton transfer whose -1 moves with the proton, as fixed charges do."""
+    return [
+        _state([0, 1], charges=[-0.4, 0.4, -1.0]),
+        _state([2, 1], charges=[-1.0, 0.4, -0.4]),
+    ]
 
 
 def _evb(positions, states, coupling):
     atoms = Atoms(numbers=NUMBERS, positions=positions)
     atoms.calc = EVB(atoms, states=states, coupling=coupling)
     return atoms
+
+
+def _numeric_forces(geometry, states, coupling, step=1e-6):
+    numeric = np.zeros_like(geometry)
+    for i in range(len(geometry)):
+        for axis in range(3):
+            probes = []
+            for sign in (+1, -1):
+                shifted = geometry.copy()
+                shifted[i, axis] += sign * step
+                probes.append(_evb(shifted, states, coupling).get_potential_energy())
+            numeric[i, axis] = -(probes[0] - probes[1]) / (2 * step)
+    return numeric
 
 
 def test_energy_is_the_lower_eigenvalue(geometry, states):
@@ -121,130 +134,51 @@ def test_the_surface_lies_below_both_diabats(geometry, states):
     assert atoms.get_potential_energy() < min(diabatic_energies(atoms, states))
 
 
-def test_forces_match_the_numerical_gradient(geometry, states):
+@pytest.mark.parametrize("which", ["acks2", "fixed"])
+def test_forces_match_the_numerical_gradient(geometry, states, charged_states, which):
+    """With each state excluding its own pairs, under both electrostatic terms.
+
+    Under ACKS2 the two states share one set of charges and differ in which
+    pairs their Coulomb exclusion removes; under fixed charges they differ in
+    the charges themselves.  Either way the weights move with the geometry, so
+    a Hellmann-Feynman sum assembled with the wrong weights is a force that no
+    longer differentiates the energy it is paired with.
+    """
+    pair = states if which == "acks2" else charged_states
+    coupling = _coupling()
+    forces = _evb(geometry, pair, coupling).get_forces()
+    assert np.allclose(forces, _numeric_forces(geometry, pair, coupling), atol=1e-5)
+
+
+def test_the_states_exclude_different_pairs(geometry, states):
+    """Each diabat's exclusions follow its own bond, so the diagonals differ by
+    more than the one bond term they differ in."""
+    from DynamicTopology.forcefield.evaluate import evaluate
+    from DynamicTopology.forcefield.exclusions import exclusion_terms
+
+    atoms = Atoms(numbers=NUMBERS, positions=geometry)
+    for params, pair in zip(states, ([0, 1], [1, 2]), strict=True):
+        terms = params.to_terms()
+        excluded = {
+            tuple(sorted(t["atoms"].values()))
+            for t in exclusion_terms(terms, atoms.numbers)
+        }
+        assert tuple(pair) in excluded
+        assert evaluate(atoms, terms).energy == pytest.approx(
+            diabatic_energies(atoms, [params, params])[0]
+        )
+
+
+def test_the_hellmann_feynman_sum_is_the_state_gradients(geometry, states):
+    """`forces = sum_s w_s dH_ss/dr + 2 c1 c2 dV/dr`, to rounding."""
     coupling = _coupling()
     atoms = _evb(geometry, states, coupling)
-    forces = atoms.get_forces()
-
-    step = 1e-6
-    numeric = np.zeros_like(geometry)
-    for i in range(len(geometry)):
-        for axis in range(3):
-            probes = []
-            for sign in (+1, -1):
-                shifted = geometry.copy()
-                shifted[i, axis] += sign * step
-                probes.append(_evb(shifted, states, coupling).get_potential_energy())
-            numeric[i, axis] = -(probes[0] - probes[1]) / (2 * step)
-    assert np.allclose(forces, numeric, atol=1e-5)
-
-
-def test_forces_match_the_numerical_gradient_with_exclusions(
-    geometry, excluded_states
-):
-    """The same check, with the two states excluding different pairs.
-
-    This is the one that says the screen is right.  `S` is built from the
-    ground-state weights and then held fixed under the derivative, while the
-    per-state Coulomb corrections sit on the diagonal and move the weights --
-    so a screen differentiated by mistake, or one assembled with the wrong
-    weights, is a force that no longer differentiates the energy it is paired
-    with.  Nothing else here would catch it: the energy is right either way.
-    """
-    coupling = _coupling()
-    atoms = _evb(geometry, excluded_states, coupling)
-    forces = atoms.get_forces()
-
-    step = 1e-6
-    numeric = np.zeros_like(geometry)
-    for i in range(len(geometry)):
-        for axis in range(3):
-            probes = []
-            for sign in (+1, -1):
-                shifted = geometry.copy()
-                shifted[i, axis] += sign * step
-                probes.append(
-                    _evb(shifted, excluded_states, coupling).get_potential_energy()
-                )
-            numeric[i, axis] = -(probes[0] - probes[1]) / (2 * step)
-    assert np.allclose(forces, numeric, atol=1e-5)
-
-
-def test_the_diagonal_carries_each_state_own_coulomb_correction(
-    geometry, excluded_states
-):
-    """Two states excluding different pairs get different diagonals from it.
-
-    The correction is what lets the exclusion decide which bonding pattern is
-    lower; a screen alone could not, being downstream of the weights.
-    """
-    atoms = _evb(geometry, excluded_states, _coupling())
-    atoms.get_potential_energy()
-    with_exclusions = np.diag(atoms.calc.results["hamiltonian"])
-
-    plain = _evb(geometry, [_state([0, 1]), _state([2, 1])], _coupling())
-    plain.get_potential_energy()
-    without = np.diag(plain.calc.results["hamiltonian"])
-
-    assert not np.allclose(with_exclusions, without)
-    # and the two states are moved by different amounts, since their masks differ
-    shift = with_exclusions - without
-    assert shift[0] != pytest.approx(shift[1])
-
-
-def test_the_screen_reproduces_the_weighted_diagonal_corrections(
-    geometry, excluded_states
-):
-    """`(ccoul/2) sum_ij S_ij Q_i Q_j K_ij  ==  E_full + sum_s w_s c_s`.
-
-    The identity the design rests on: the per-state correction and the screened
-    contraction are the same quantity summed two ways, which is why `EVB` can
-    put one on the diagonal and take its energy from the eigenvalue while taking
-    its gradient from the other.
-    """
-    atoms = _evb(geometry, excluded_states, _coupling())
-    atoms.get_potential_energy()
-    weights = atoms.calc.results["statevec"]
-
-    evaluator = atoms.calc.electrostatic
-    terms = excluded_states[0].terms
-    pos, pbc, cell = atoms.get_positions(), atoms.pbc, np.array(atoms.cell)
-    indices, Q, K = evaluator.charges_and_kernel(pos, pbc, cell, terms)
-
-    full = evaluator(pos, pbc, cell, terms)[0]
-    corrections = [
-        exclusions.coulomb_correction(
-            Q, K, p.exclusions[np.ix_(indices, indices)]
-        )
-        for p in excluded_states
-    ]
-    masks = [p.exclusions[np.ix_(indices, indices)] for p in excluded_states]
-    screen = exclusions.screen(masks, weights, len(indices))
-
-    assert evaluator(pos, pbc, cell, terms, screen)[0] == pytest.approx(
-        full + float(np.dot(weights, corrections))
-    )
-
-
-def test_the_screen_collapses_the_hellmann_feynman_sum(geometry, excluded_states):
-    """`sum_s w_s dH_ss/dr` is the single screened evaluation, to rounding.
-
-    `diabatic_forces` screens per state with that state's own `1 - M^s`; `EVB`
-    screens once with `1 - sum_s w_s M^s`.  They agree because the whole
-    electrostatic gradient -- the explicit part and the charge-response adjoint
-    alike -- is linear in the screen, which is the claim that lets the surface
-    pay for one electrostatic evaluation per step instead of one per state.
-    """
-    from fastforces.evb import diabatic_forces
-
-    coupling = _coupling()
-    atoms = _evb(geometry, excluded_states, coupling)
     forces = atoms.get_forces()
 
     weights = atoms.calc.results["statevec"]
     c = np.linalg.eigh(atoms.calc.results["hamiltonian"])[1][:, 0]
     _, coupling_forces, _ = coupling(geometry, atoms.pbc, np.array(atoms.cell))
-    _, per_state = diabatic_forces(atoms, excluded_states)
+    _, per_state = diabatic_forces(atoms, states)
 
     collapsed = (
         weights[0] * per_state[0]
@@ -285,11 +219,7 @@ def test_the_coupling_sets_the_depth_at_a_degenerate_geometry():
 
 def test_a_common_shift_moves_the_surface_by_exactly_that_shift(geometry):
     """The coupling is a function of the geometry alone, so a constant added to
-    both diagonals passes straight through the eigenvalue.
-
-    That is what makes the placement of the topology-independent terms free, and
-    it is the property the `sqrt((1+h) H1 H2)` coupling does not have.
-    """
+    both diagonals passes straight through the eigenvalue."""
     coupling = _coupling()
     plain = _evb(geometry, [_state([0, 1]), _state([2, 1])], coupling)
     shifted = _evb(
@@ -321,3 +251,64 @@ def test_two_states_are_required(geometry):
 def test_a_coupling_is_required(geometry, states):
     with pytest.raises(ValueError, match="needs a Coupling"):
         EVB(Atoms(numbers=NUMBERS, positions=geometry), states=states)
+
+
+def test_the_states_must_share_their_electrostatics(geometry, states, charged_states):
+    with pytest.raises(ValueError, match="disagree about their electrostatics"):
+        EVB(
+            Atoms(numbers=NUMBERS, positions=geometry),
+            states=[states[0], charged_states[1]],
+            coupling=_coupling(),
+        )
+
+
+@pytest.mark.skipif(not WATER.exists(), reason="needs the DynamicTopo checkout")
+@pytest.mark.parametrize(
+    "reaction", ["h3o-h2o-transfer", "h2o-oh-transfer", "h2o-autoionization"]
+)
+def test_the_surface_is_dynamictopology_s(reaction):
+    """`EVB` is what DynamicTopology's `System` gives the same reaction.
+
+    The two states are the dataset's own templates, remapped onto the reaction's
+    atoms by `ReactionSet.get_terms` exactly as a simulation remaps them, and the
+    coupling is the reaction's own fitted term.  Evaluated at the transition
+    state, where both diabats are occupied and the coupling is at its largest.
+    """
+    from DynamicTopology.core import ReactionSet, Topology
+    from DynamicTopology.forcefield.params import ForceFieldParams, use
+    from DynamicTopology.system import System
+
+    manifest = WATER / "Water.json"
+    params = ForceFieldParams.from_dict(json.loads(manifest.read_text())["global_params"])
+    frames = io.read(WATER / "reactions" / f"{reaction}.xyz", index=":")
+    ts = frames[len(frames) // 2].copy()
+    ts.calc = None
+    rows = [json.loads(line) for line in open(WATER / "reactions" / f"{reaction}.jsonl")]
+
+    with use(params):
+        reaction_set = ReactionSet(manifest)
+        states = []
+        for end in (frames[0], frames[-1]):
+            topology = Topology.from_atoms(end)
+            terms = [
+                t
+                for t in reaction_set.get_terms(topology)
+                if not t["type"].endswith("exclusion")
+            ]
+            states.append(Parameters(numbers=ts.numbers, terms=terms_to_blocks(terms)))
+        coupling = Coupling.from_rows(rows)
+
+        work = ts.copy()
+        work.calc = EVB(work, states=states, coupling=coupling)
+        energy, forces = work.get_potential_energy(), work.get_forces()
+
+        seed = ts.copy()
+        seed.info["connectivity"] = frames[0].info["connectivity"]
+        expected = System(
+            seed, Topology.from_atoms(seed), reaction_set, evb={"max_states": 2}
+        ).calculate()
+
+    (block,) = [b for b in expected["blocks"] if b["nstates"] > 1]
+    assert block["nstates"] == 2
+    assert energy == pytest.approx(expected["energy"], abs=1e-8)
+    np.testing.assert_allclose(forces, expected["forces"], atol=1e-8)

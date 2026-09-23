@@ -44,7 +44,7 @@ def synthetic(topology: Topology, offset: float = 0.0) -> Parameters:
         kwargs = {n: v.copy() for n, v in topology.fixed.get(term, {}).items()}
         names = list(GEOMETRIC.get(term, {})) + ["k"]
         if term == "bond":
-            names = ["r0", "k", "D", "c"]
+            names = ["r0", "k", "D"]
         for i, name in enumerate(names):
             kwargs[name] = 1.0 + offset + 0.25 * i + 0.03 * classes
         terms[term] = {"atoms": atoms.copy(), "kwargs": kwargs}
@@ -55,7 +55,7 @@ def test_every_class_is_seeded_from_a_matching_field(topology):
     initial = synthetic(topology)
     seed = _seed_from(topology, initial, len(H2O2))
 
-    for name, expected in (("r0", 1.0), ("k", 1.25), ("D", 1.5), ("c", 1.75)):
+    for name, expected in (("r0", 1.0), ("k", 1.25), ("D", 1.5)):
         classes = np.arange(topology.n_classes("bond"))
         assert seed.bond[name] == pytest.approx(expected + 0.03 * classes)
 

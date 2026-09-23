@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "ase>=3.29.0",
+    "dynamictopology",
     "molify>=0.2.6",
     "networkx>=3.6",
     "numpy>=2.0",
@@ -18,6 +19,7 @@ dependencies = [
     "scipy>=1.14",
     "sella>=2.6.0",
     "tblite>=0.7.0",
+    "typer>=0.27.2",
 ]
 
 [project.scripts]
@@ -35,7 +37,11 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "sphinx>=9.1.0",
 ]
 
 [tool.pytest.ini_options]
 markers = ["slow: end-to-end fits that call a reference calculator"]
+
+[tool.uv.sources]
+dynamictopology = { path = "../DynamicTopo", editable = true }

@@ -45,18 +45,21 @@ and a real barrier instead, which is exactly the data `fit_amplitude` wants.
 **Units.** Like the ACKS2 `atom` block, and unlike every other term, coupling
 parameters are written to jsonl in the calculator's own units -- eV and
 Angstrom, unconverted.  That is what the reference files carry (`A` in eV, `ra0`
-in Angstrom) and `export.units` records it as a table of unit powers that are
-all zero, so the round trip is exact rather than merely consistent.
+in Angstrom) and `DynamicTopology.io.units` records it as a table of unit
+powers that are all zero, so the round trip is exact rather than merely
+consistent.
 """
 
-import json
 from dataclasses import dataclass, field
 
 import numpy as np
 from ase import Atoms
 
-from .export import units as export_units
-from .forcefield.coupling import EVBCoupling, _kabsch
+from DynamicTopology.forcefield.coupling import EVBCoupling, kabsch
+from DynamicTopology.io.json import read_jsonl, write_jsonl
+from DynamicTopology.io.units import term_from_disk, term_to_disk
+
+from .params import block_to_terms, terms_to_blocks
 
 # Coupling considered switched off at this magnitude (eV).
 DEFAULT_EPS: float = 1e-3
@@ -99,15 +102,20 @@ class Coupling:
     the RMSD form superposes onto -- unused by the other two forms, and carried
     regardless because it is what makes the term reproducible.
 
-    `provenance` records, per term type, whether the amplitude was fitted, was
-    handed in as a placeholder, or is zero.  It is not a parameter and no
-    evaluator reads it; it is how a surface built on an unfitted coupling stays
-    readable instead of having to be inferred from a magic amplitude value.
+    `provenance` records, per term type, whether the amplitude was `fitted`,
+    handed in as a `placeholder`, is zero (`decoupled`), or was set by hand and
+    is to be kept (`manual`) -- DynamicTopology's vocabulary, since the rows are
+    its.  It is not a parameter and no evaluator reads it; it is how a surface
+    built on an unfitted coupling stays readable instead of having to be
+    inferred from a magic amplitude value.  `limited_by` says, for a fission's
+    `twobody` term, which end of the path set its width: `"reactant"` or
+    `"cutoff"`.
     """
 
     terms: dict = field(default_factory=dict)
     ensemble: np.ndarray | None = None
     provenance: dict = field(default_factory=dict)
+    limited_by: dict = field(default_factory=dict)
 
     def __repr__(self) -> str:
         parts = []
@@ -118,59 +126,42 @@ class Coupling:
 
     # -- jsonl ----------------------------------------------------------
 
-    def to_rows(self) -> list[dict]:
-        rows = []
+    def to_terms(self) -> list[dict]:
+        """The DynamicTopology term list, as a reaction's `.jsonl` loads to."""
+        out = []
         for term, block in self.terms.items():
-            atoms = np.asarray(block["atoms"])
-            names = export_units.slot_names(term, atoms.shape[1])
-            for i in range(len(atoms)):
-                rows.append(
-                    {
-                        "type": term,
-                        "atoms": {
-                            n: int(a) for n, a in zip(names, atoms[i], strict=True)
-                        },
-                        "kwargs": {
-                            key: float(export_units.to_openmm(term, key, value[i]))
-                            for key, value in block["kwargs"].items()
-                        },
-                        "provenance": self.provenance.get(term, "fitted"),
-                    }
-                )
-        return rows
+            for row in block_to_terms(term, block):
+                row["provenance"] = self.provenance.get(term, "fitted")
+                if term in self.limited_by:
+                    row["limited_by"] = self.limited_by[term]
+                out.append(row)
+        return out
+
+    def to_rows(self) -> list[dict]:
+        return [term_to_disk(term) for term in self.to_terms()]
 
     def to_jsonl(self, path: str) -> None:
-        with open(path, "w") as handle:
-            for row in self.to_rows():
-                handle.write(json.dumps(row) + "\n")
+        write_jsonl(path, self.to_terms(), exist_ok=True)
 
     @classmethod
     def from_rows(cls, rows: list[dict], ensemble=None):
-        terms: dict = {}
-        provenance: dict = {}
-        for row in rows:
-            term = row["type"]
-            entry = terms.setdefault(term, {"atoms": [], "kwargs": {}})
-            entry["atoms"].append([int(v) for v in row["atoms"].values()])
-            for key, value in row["kwargs"].items():
-                entry["kwargs"].setdefault(key, []).append(
-                    export_units.from_openmm(term, key, value)
-                )
-            provenance[term] = row.get("provenance", "fitted")
-        for term, entry in terms.items():
-            terms[term] = {
-                "atoms": np.array(entry["atoms"], dtype=int),
-                "kwargs": {
-                    k: np.array(v, dtype=float) for k, v in entry["kwargs"].items()
-                },
-            }
-        return cls(terms=terms, ensemble=ensemble, provenance=provenance)
+        return cls.from_terms([term_from_disk(row) for row in rows], ensemble)
+
+    @classmethod
+    def from_terms(cls, terms: list[dict], ensemble=None):
+        """Invert `to_terms`."""
+        provenance = {t["type"]: t.get("provenance", "fitted") for t in terms}
+        limited_by = {t["type"]: t["limited_by"] for t in terms if "limited_by" in t}
+        return cls(
+            terms=terms_to_blocks(terms),
+            ensemble=ensemble,
+            provenance=provenance,
+            limited_by=limited_by,
+        )
 
     @classmethod
     def from_jsonl(cls, path: str, ensemble=None):
-        with open(path) as handle:
-            rows = [json.loads(line) for line in handle if line.strip()]
-        return cls.from_rows(rows, ensemble=ensemble)
+        return cls.from_terms(read_jsonl(path), ensemble)
 
     # -- evaluation -----------------------------------------------------
 
@@ -239,13 +230,13 @@ def fit_amplitude(
 def rmsd(reference: np.ndarray, positions: np.ndarray) -> float:
     """Optimally superposed RMSD, matching `EVBCoupling.compute_rmsd`.
 
-    Goes through the evaluator's own `_kabsch` rather than a second
+    Goes through the evaluator's own `kabsch` rather than a second
     superposition routine, so the metric the width is fitted in is the metric
     the coupling is later evaluated in.
     """
     reference = np.asarray(reference, dtype=float)
     mobile = np.asarray(positions, dtype=float)[None]
-    rotation, translation = _kabsch(reference, mobile)
+    rotation, translation = kabsch(reference, mobile)
     moved = np.einsum("mni,mji->mnj", mobile, rotation) + translation[:, None, :]
     return float(np.sqrt(np.mean(np.sum((reference - moved[0]) ** 2, axis=-1))))
 
@@ -647,14 +638,12 @@ def fit_twobody(
             }
         },
         ensemble=np.array([np.asarray(positions, dtype=float)]),
+        provenance={"twobody": "fitted"},
         # Which end of the path set the width, so a squeezed amplitude is
         # readable from the term file rather than having to be re-derived.
-        provenance={
-            "twobody": "fitted"
-            + (
-                "-cutoff"
-                if bimol_cutoff - crossing < crossing - minimum
-                else "-reactant"
+        limited_by={
+            "twobody": (
+                "cutoff" if bimol_cutoff - crossing < crossing - minimum else "reactant"
             )
         },
     )
@@ -684,6 +673,7 @@ def fit(
     surface puts on its diagonal.  An amplitude fitted against a diagonal
     nobody will evaluate reproduces a barrier nobody will see.
     """
+    from .calculator import term_dict_for
     from .evb import diabatic_energies
 
     kind, spec = reaction.channel()
@@ -692,11 +682,12 @@ def fit(
         pair, moving = spec
         bonded = 0 if reaction.broken else 1
         ordered = [states[bonded], states[1 - bonded]]
+        term_dicts = [term_dict_for(p) for p in ordered]
         work = frames[0].copy()
 
         def diabats(positions):
             work.set_positions(positions)
-            return diabatic_energies(work, ordered)
+            return diabatic_energies(work, ordered, term_dicts=term_dicts)
 
         return fit_twobody(
             frames[0].get_positions(),

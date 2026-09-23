@@ -73,7 +73,7 @@ def test_symmetry_equivalent_bonds_share_parameters(h2o2_fit):
     kwargs = params.terms["bond"]["kwargs"]
     rows = [tuple(sorted(r)) for r in params.terms["bond"]["atoms"]]
     first, second = rows.index((0, 2)), rows.index((1, 3))
-    for name in ("r0", "k", "D", "c"):
+    for name in ("r0", "k", "D"):
         assert kwargs[name][first] == kwargs[name][second]
 
 
@@ -368,9 +368,9 @@ def test_the_refit_drift_is_the_stopping_tolerance(h2o2_fit):
 def _with_mulliken(path, charges, out):
     """Copy a training set, writing `charges` onto every frame as `mulliken`.
 
-    The fixture's reference calculator is GFN2-xTB, which writes no `mulliken`
-    array -- only `calculators.pyscf.PySCFCalculator` does -- so the charges are
-    injected here.  Their values do not matter to what these tests assert; that
+    The fixture's reference calculator is plain `tblite.ase.TBLite`, which
+    writes no `mulliken` array -- `calculators.tblite.TBLiteCalculator` and
+    `calculators.pyscf.PySCFCalculator` do -- so the charges are injected here.  Their values do not matter to what these tests assert; that
     they are carried from the file into the fitted field does.
     """
     data = io.read_training_set(path)
@@ -381,7 +381,7 @@ def _with_mulliken(path, charges, out):
 
 
 def test_fixed_charges_come_off_the_training_file(tmp_path, h2o2_fit):
-    """`electrostatics='fixed'` builds a `coulomb` block and drops `atom`."""
+    """`electrostatics='fixed'` builds a `charge` block and drops `atom`."""
     _, params, path = h2o2_fit
     # H2O2 as O, O, H, H: the two oxygens are one equivalence class and the two
     # hydrogens another, and these are already symmetric so the class-wise mean
@@ -392,9 +392,9 @@ def test_fixed_charges_come_off_the_training_file(tmp_path, h2o2_fit):
         config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
     )
 
-    assert fixed.electrostatics() == "coulomb"
+    assert fixed.electrostatics() == "charge"
     assert "atom" not in fixed.terms
-    assert np.allclose(fixed.terms["coulomb"]["kwargs"]["q"], charges)
+    assert np.allclose(fixed.terms["charge"]["kwargs"]["q"], charges)
     # the ACKS2 fit of the same molecule is the other way round
     assert params.electrostatics() == "atom"
 
@@ -413,7 +413,7 @@ def test_fixed_charges_are_averaged_within_an_equivalence_class(tmp_path, h2o2_f
         config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
     )
 
-    q = np.asarray(fixed.terms["coulomb"]["kwargs"]["q"])
+    q = np.asarray(fixed.terms["charge"]["kwargs"]["q"])
     assert q[0] == pytest.approx(q[1])
     assert q[2] == pytest.approx(q[3])
     # a class-wise mean moves no charge between classes
@@ -428,6 +428,74 @@ def test_fixed_charges_need_charges_in_the_file(h2o2_fit):
             path,
             config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
         )
+
+
+def test_tblite_writes_its_charges_onto_the_frame():
+    """A manifest's `tblite` leaves xTB's charges where the fit reads them.
+
+    Hydroxide, so the check that they sum to the formal charge is not the
+    trivial one a neutral molecule would pass by symmetry alone.
+    """
+    import fastforces as ff
+    from fastforces import sampling
+    from fastforces.manifest import calculator_factory
+
+    factory, _ = calculator_factory({"name": "tblite"})
+    atoms = ff.build("[OH-]")
+    frame = sampling.label(atoms, factory, "equilibrium")
+
+    q = frame.get_array("mulliken")
+    assert q.shape == (len(atoms),)
+    assert q.sum() == pytest.approx(-1.0, abs=1e-6)
+    assert q[0] < -0.5  # the oxygen carries it
+
+
+def test_label_replaces_a_stale_array():
+    """A frame copied off a labelled one gets its own charges, not the parent's.
+
+    A Hessian frame is a copy of the labelled equilibrium, so it arrives already
+    carrying a `mulliken` array from another geometry.
+    """
+    import fastforces as ff
+    from fastforces import sampling
+    from fastforces.manifest import calculator_factory
+
+    factory, _ = calculator_factory({"name": "tblite"})
+    atoms = ff.build("O")
+    atoms.set_array("mulliken", np.full(len(atoms), 9.0), float)
+    frame = sampling.label(atoms, factory, "hessian")
+
+    q = frame.get_array("mulliken")
+    assert not np.allclose(q, 9.0)
+    assert q.sum() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_tblite_fixed_charge_fit_freezes_the_xtb_charges(tmp_path):
+    """tblite alone is enough for `electrostatics='fixed'`: no injected array.
+
+    The template's charges are the equilibrium frame's xTB charges averaged
+    within each equivalence class, and carry the formal charge.
+    """
+    import fastforces as ff
+    from fastforces.charges import class_average
+    from fastforces.manifest import calculator_factory
+
+    factory, _ = calculator_factory({"name": "tblite"})
+    path = tmp_path / "water.xyz"
+    params = ff.parameterize(
+        ff.build("O"),
+        factory,
+        config=FitConfig(n_mode_frames=10, n_conformers=0, electrostatics="fixed"),
+        training_set=str(path),
+    )
+
+    equilibrium = io.read_training_set(str(path)).equilibrium
+    raw = equilibrium.get_array("mulliken")
+    classes = enumerate_terms(equilibrium).atom_classes
+    q = np.asarray(params.terms["charge"]["kwargs"]["q"])
+    assert np.allclose(q, class_average(raw, classes))
+    assert q.sum() == pytest.approx(0.0, abs=1e-6)
+    assert q[0] < 0 < q[1]
 
 
 def test_the_fixed_charge_fit_is_as_accurate(tmp_path, h2o2_fit):
@@ -464,14 +532,14 @@ def test_a_fixed_charge_starting_point_switches_the_fit_over(tmp_path, h2o2_fit)
     initial = Parameters(
         numbers=params.numbers,
         terms={
-            "coulomb": {"atoms": np.arange(n)[:, None], "kwargs": {"q": charges}},
+            "charge": {"atoms": np.arange(n)[:, None], "kwargs": {"q": charges}},
         },
     )
     # Default config, i.e. ACKS2: the starting point is what moves it over.
     again = fit_from_file(path, initial=initial)
 
-    assert again.electrostatics() == "coulomb"
-    assert np.allclose(again.terms["coulomb"]["kwargs"]["q"], charges)
+    assert again.electrostatics() == "charge"
+    assert np.allclose(again.terms["charge"]["kwargs"]["q"], charges)
 
 
 def test_a_diatomic_fits(tmp_path, tblite_factory):
@@ -485,5 +553,5 @@ def test_a_diatomic_fits(tmp_path, tblite_factory):
         config=FitConfig(n_mode_frames=10, n_conformers=0),
         training_set=str(tmp_path / "hydroxide.xyz"),
     )
-    assert set(params.bonded_terms()) == {"bond"}
+    assert set(params.terms) - {"atom", "lennardjones"} == {"bond", "reference"}
     assert params.report["force_rmse_eV_A"] < 0.01

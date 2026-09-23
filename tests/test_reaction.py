@@ -202,7 +202,9 @@ def _fragment_field(smiles: str, e0: float) -> tuple:
 
     atoms = ff.build(smiles)
     graph = ff.perceive(atoms)
-    bonds = np.array(sorted(tuple(sorted(e)) for e in graph.edges()), dtype=int)
+    bonds = np.array(
+        sorted(tuple(sorted(e)) for e in graph.edges()), dtype=int
+    ).reshape(-1, 2)
     params = Parameters(numbers=atoms.get_atomic_numbers())
     column = np.arange(len(atoms))[:, None]
     for term, kwargs in elements.defaults_for(params.numbers).items():
@@ -275,6 +277,26 @@ def test_the_two_states_differ_only_where_their_topologies_do():
     }
     assert bonds["reactant"] - bonds["product"] == reaction.broken
     assert bonds["product"] - bonds["reactant"] == reaction.formed
+
+
+@pytest.mark.parametrize(
+    "smiles",
+    [
+        "[H:1][H:2].[O:3]>>[O:3][H:2].[H:1]",
+        "[O:1][O:2][H:3].[H:4]>>[O:1][O:2].[H:3][H:4]",
+    ],
+)
+def test_radical_fragments_map_onto_their_atoms(smiles):
+    """`ase2rdkit` reads every atom back with its valence filled -- `[OH]` as
+    water's oxygen, a lone `[O]` as water -- so a radical fragment only maps
+    if the match leaves the radicals out."""
+    reaction = R.parse(smiles)
+    fragments = reaction.reactant_fragments + reaction.product_fragments
+    fitted = {f.key: _fragment_field(f.smiles, 0.0) for f in fragments}
+    for side in ("reactant", "product"):
+        params = R.state_parameters(reaction, side, fitted)
+        got = {frozenset(row) for row in params.terms["bond"]["atoms"]}
+        assert got == set(reaction.bonds(side))
 
 
 def test_a_missing_fragment_fit_is_an_error():

@@ -94,8 +94,15 @@ def test_a_manifest_molecule_has_the_key_a_reaction_gives_it():
 # ---------------------------------------------------------------------------
 
 
-def test_the_example_manifest_loads():
-    manifest = M.load(HERE.parent / "examples" / "proton-transfer" / "Water.json")
+WATER_MANIFEST = HERE.parents[1] / "DynamicTopo" / "datasets" / "Water" / "Water.json"
+
+
+@pytest.mark.skipif(
+    not WATER_MANIFEST.exists(), reason="needs the DynamicTopo checkout"
+)
+def test_the_water_dataset_manifest_loads():
+    """DynamicTopology's own dataset manifest is a fast-forces manifest too."""
+    manifest = M.load(WATER_MANIFEST)
     assert len(manifest.molecules) == 5
     assert len(manifest.reactions) == 3
     assert all(e.mapped for e in manifest.reactions)
@@ -119,24 +126,69 @@ def test_fit_config_reaches_the_fit(tmp_path):
     assert (config.n_mode_frames, config.temperature) == (7, 300.0)
 
 
-def test_the_package_defaults_pass_the_global_check(tmp_path):
-    M.load(write(tmp_path, global_params=M.package_globals()))
+def test_dynamictopology_s_defaults_load(tmp_path):
+    from DynamicTopology.forcefield.params import DEFAULTS
+
+    manifest = M.load(write(tmp_path, global_params=DEFAULTS.to_dict()))
+    assert manifest.params == DEFAULTS
+
+
+def test_stated_global_params_are_applied(tmp_path):
+    """A dataset is fitted at its own `global_params`, not the defaults."""
+    manifest = M.load(
+        write(tmp_path, global_params={"taper_radius": 1.6, "switch_radius": 2.4})
+    )
+    assert manifest.params.taper_radius == 1.6
+    assert manifest.params.switch_radius == 2.4
 
 
 @pytest.mark.parametrize(
     "global_params, message",
     [
-        ({"taper_radius": 1.6}, "taper_radius=1.6"),
-        ({"switch_radius": 2.2}, "switch_radius=2.2"),  # Angstrom, not nm
-        ({"exclude_coulomb": False}, "exclude_coulomb"),
-        ({"taper_raduis": 1.5}, "unknown global_params"),
+        ({"taper_raduis": 1.5}, "unknown `global_params`"),
+        ({"electrostatics": "qeq"}, "electrostatics must be one of"),
+        ({"exclusion_depth": -1}, "exclusion_depth must be >= 0"),
+        ({"taper_width": 0.0}, "taper_width must be > 0"),
     ],
 )
-def test_global_params_the_package_would_not_honour_are_refused(
+def test_global_params_dynamictopology_would_not_accept_are_refused(
     tmp_path, global_params, message
 ):
     with pytest.raises(M.ManifestError, match=message):
         M.load(write(tmp_path, global_params=global_params))
+
+
+@pytest.mark.parametrize(
+    "global_params, fit_config, expected",
+    [
+        ({}, {}, ("acks2", "acks2")),
+        ({}, {"electrostatics": "fixed"}, ("pointcharge", "fixed")),
+        ({"electrostatics": "pointcharge"}, {}, ("pointcharge", "fixed")),
+        (
+            {"electrostatics": "pointcharge"},
+            {"electrostatics": "fixed"},
+            ("pointcharge", "fixed"),
+        ),
+    ],
+)
+def test_the_two_electrostatics_settings_follow_each_other(
+    tmp_path, global_params, fit_config, expected
+):
+    manifest = M.load(
+        write(tmp_path, global_params=global_params, fit_config=fit_config)
+    )
+    assert (manifest.params.electrostatics, manifest.config.electrostatics) == expected
+
+
+def test_contradictory_electrostatics_are_refused(tmp_path):
+    with pytest.raises(M.ManifestError, match="have to agree"):
+        M.load(
+            write(
+                tmp_path,
+                global_params={"electrostatics": "acks2"},
+                fit_config={"electrostatics": "fixed"},
+            )
+        )
 
 
 @pytest.mark.parametrize(

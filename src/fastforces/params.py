@@ -2,57 +2,97 @@
 
 Internally the parameters are held as a `term_dict` in ASE units (eV,
 Angstrom) -- the units the fit works in, because its residuals come from an ASE
-calculator's own energies and forces.
+calculator's own energies and forces, and the units every DynamicTopology
+evaluator reads.  Nothing in the evaluation path converts anything.
 
-All four evaluators want them that way, so `terms` is handed to each of them as
-it stands and nothing in the evaluation path converts anything.  The two export
-formats are the only OpenMM-flavoured representations, and `export.units` is the
-only place that conversion is written down, so the calculator and the two
-exporters cannot drift apart.
+The force field itself is DynamicTopology's.  This package fits parameters for
+it and evaluates them through it -- `DynamicTopology.forcefield.evaluate`, the
+single-topology sum `System` puts on a diabat -- so a template scores here
+exactly as it will in a simulation.  `to_terms` is the bridge: the same
+parameters as the term list DynamicTopology holds in memory.
+
+The two file formats are the `.jsonl` DynamicTopology loads, converted to nm and
+kJ/mol by `DynamicTopology.io.units` (the one table of what converts how), and
+an OpenMM System (`export.openmm`).
 """
 
-import json
 from dataclasses import dataclass, field
 
-import networkx as nx
 import numpy as np
-
-from .export import units as export_units
-
-# Terms the bonded evaluator does not implement, and that the calculator handles
-# itself.  `QForce.__call__` silently skips unknown keys, so these ride along in
-# the same container without disturbing it.
-NON_QFORCE_TERMS = ("atom", "coulomb", "lennardjones", "reference")
+from DynamicTopology.io.json import read_jsonl, write_jsonl
+from DynamicTopology.io.units import term_from_disk, term_to_disk
 
 # The two electrostatic terms, which are alternatives rather than additions:
 # `atom` is the ACKS2 per-atom block whose charges are re-solved at every
-# geometry, `coulomb` the fixed per-atom charges.  Both sum the same kernel over
+# geometry, `charge` the fixed per-atom charges.  Both sum the same kernel over
 # the same pairs, so a field carrying both would count electrostatics twice.
-ELECTROSTATIC_TERMS = ("atom", "coulomb")
+# Each names the value of DynamicTopology's `global_params.electrostatics`
+# that evaluates it.
+ELECTROSTATIC_TERMS: dict[str, str] = {"atom": "acks2", "charge": "pointcharge"}
+
+# The order terms are written in, and the slot names each uses for its atom
+# indices -- per-atom terms `p0`, bonded terms `p1..pN`, `reference` `a1`, as
+# the DynamicTopology datasets carry them.
+TERM_ORDER: tuple[str, ...] = (
+    "atom",
+    "charge",
+    "lennardjones",
+    "bond",
+    "angle",
+    "bondbond",
+    "bondangle",
+    "angleangle",
+    "dihedralangle",
+    "dihedralbond",
+    "dihedralangleangle",
+    "periodicdihedral",
+    "reference",
+)
+SLOT_PREFIX: dict[str, str] = {"reference": "a"}
+SLOT_START: dict[str, int] = {
+    "atom": 0,
+    "charge": 0,
+    "lennardjones": 0,
+    "reference": 1,
+}
 
 
+def slot_names(term: str, n_slots: int) -> list[str]:
+    prefix = SLOT_PREFIX.get(term, "p")
+    start = SLOT_START.get(term, 1)
+    return [f"{prefix}{start + i}" for i in range(n_slots)]
 
-def _exclusion_mask(terms: dict, n_atoms: int) -> np.ndarray:
-    """The 1-2/1-3/1-4 mask implied by a term dict's `bond` block.
 
-    Derived rather than stored.  A `.jsonl` states the bond graph once, in its
-    bond terms, and a mask written alongside it could go stale against an edited
-    radius or a removed bond -- which would show up only as a field no longer
-    reproducing its own energy.  The graph here is built the same way
-    `Topology.from_terms` builds it, and the depth is `forcefield.exclusions`'s,
-    so a loaded field excludes exactly what the field it was written from did.
-    """
-    from .forcefield.exclusions import EXCLUSION_DEPTH
-    from .topology import exclusion_mask
+def block_to_terms(term: str, block: dict) -> list[dict]:
+    """One `term_dict` block as a list of DynamicTopology terms, in ASE units."""
+    atoms = np.asarray(block["atoms"])
+    names = slot_names(term, atoms.shape[1])
+    return [
+        {
+            "type": term,
+            "atoms": {n: int(a) for n, a in zip(names, atoms[i], strict=True)},
+            "kwargs": {key: float(value[i]) for key, value in block["kwargs"].items()},
+        }
+        for i in range(len(atoms))
+    ]
 
-    graph = nx.Graph()
-    graph.add_nodes_from(range(n_atoms))
-    bonds = terms.get("bond")
-    if bonds is not None:
-        graph.add_edges_from(
-            (int(a), int(b)) for a, b in np.asarray(bonds["atoms"])[:, :2]
+
+def terms_to_blocks(terms: list[dict]) -> dict[str, dict]:
+    """Invert `block_to_terms` over a whole term list."""
+    grouped: dict[str, list[dict]] = {}
+    for term in terms:
+        grouped.setdefault(term["type"], []).append(term)
+    blocks = {}
+    for kind, entries in grouped.items():
+        atoms = np.array(
+            [[int(v) for v in e["atoms"].values()] for e in entries], dtype=int
         )
-    return exclusion_mask(graph, n_atoms, EXCLUSION_DEPTH)
+        kwargs = {
+            key: np.array([e["kwargs"][key] for e in entries], dtype=float)
+            for key in entries[0]["kwargs"]
+        }
+        blocks[kind] = {"atoms": atoms, "kwargs": kwargs}
+    return blocks
 
 
 @dataclass
@@ -61,21 +101,15 @@ class Parameters:
 
     `terms` is the `term_dict`: `{type: {"atoms": (n, slots) int array,
     "kwargs": {name: (n,) float array}}}`, in eV and Angstrom.
+
+    The 1-2/1-3/1-4 exclusions are not stored.  DynamicTopology derives them
+    from the `bond` terms whenever it evaluates a term list -- `to_terms` hands
+    it exactly that -- so a field excludes what its bonds say, and an edited
+    bond cannot leave a stale exclusion behind.
     """
 
     numbers: np.ndarray
     terms: dict[str, dict] = field(default_factory=dict)
-    # The 1-2/1-3/1-4 mask from `Topology`, and the only topology the three
-    # whole-system pair sums ever see.  `forcefield/exclusions.py` takes every
-    # pair it marks back off all three -- `-u_ZBL` and `-u_126` additively, the
-    # Coulomb contraction through a screen -- and `export.openmm` writes it into
-    # the exported system as real OpenMM exclusions.
-    #
-    # `None` means "no exclusions", which is a force field that charges every
-    # bonded pair two nonbonded terms and will not reproduce its own reference
-    # energy.  Both routes in set it: `fit` from the topology it fit against,
-    # `from_rows` from the `bond` terms it just read.
-    exclusions: np.ndarray | None = None
     report: dict = field(default_factory=dict)
 
     # ------------------------------------------------------------------
@@ -94,7 +128,7 @@ class Parameters:
     def electrostatics(self) -> str | None:
         """Which electrostatic term this field carries, or `None` for neither.
 
-        `atom` means ACKS2, `coulomb` means fixed charges.  They are mutually
+        `atom` means ACKS2, `charge` means fixed charges.  They are mutually
         exclusive -- see `ELECTROSTATIC_TERMS` -- and every consumer asks here
         rather than testing for a term name itself, so the exclusion is checked
         once instead of being assumed in four places.
@@ -103,19 +137,30 @@ class Parameters:
         if len(present) > 1:
             raise ValueError(
                 f"a force field carries one electrostatic term, not {present}: "
-                "`atom` (ACKS2) and `coulomb` (fixed charges) sum the same "
+                "`atom` (ACKS2) and `charge` (fixed charges) sum the same "
                 "kernel over the same pairs, so keeping both double counts it"
             )
         return present[0] if present else None
 
-    def bonded_terms(self) -> dict:
-        """Just the terms `QForce` evaluates, in ASE units.
+    def global_electrostatics(self) -> str:
+        """The `global_params.electrostatics` this field is evaluated under.
 
-        `reference` is excluded even though `QForce.compute_reference` would
-        evaluate it: `E0` is added once by the calculator, and letting `QForce`
-        pick it up as well would count it twice.
+        DynamicTopology's `evaluate` picks the same one from the block present
+        (`evaluate.surface`), so this is for the checks that two fields, or a
+        field and a manifest, agree -- not something an evaluation has to set.
         """
-        return {k: v for k, v in self.terms.items() if k not in NON_QFORCE_TERMS}
+        return ELECTROSTATIC_TERMS.get(self.electrostatics(), "acks2")
+
+    def to_terms(self) -> list[dict]:
+        """The term list DynamicTopology holds in memory: ASE units, `TERM_ORDER`."""
+        out: list[dict] = []
+        for term in TERM_ORDER:
+            if term in self.terms:
+                out.extend(block_to_terms(term, self.terms[term]))
+        unknown = sorted(set(self.terms) - set(TERM_ORDER))
+        if unknown:
+            raise KeyError(f"no DynamicTopology term type {unknown}")
+        return out
 
     def fit_report(self) -> str:
         if not self.report:
@@ -140,58 +185,21 @@ class Parameters:
     # ------------------------------------------------------------------
 
     def to_rows(self) -> list[dict]:
-        """The DynamicTopology representation: one row per term, OpenMM units."""
-        rows = []
-        for term in export_units.TERM_ORDER:
-            block = self.terms.get(term)
-            if block is None:
-                continue
-            atoms = np.asarray(block["atoms"])
-            names = export_units.slot_names(term, atoms.shape[1])
-            for i in range(len(atoms)):
-                rows.append(
-                    {
-                        "type": term,
-                        "atoms": {
-                            n: int(a) for n, a in zip(names, atoms[i], strict=True)
-                        },
-                        "kwargs": {
-                            key: float(export_units.to_openmm(term, key, value[i]))
-                            for key, value in block["kwargs"].items()
-                        },
-                    }
-                )
-        return rows
+        """The `.jsonl` representation: one row per term, nm and kJ/mol."""
+        return [term_to_disk(term) for term in self.to_terms()]
 
     def to_jsonl(self, path: str) -> None:
-        with open(path, "w") as handle:
-            for row in self.to_rows():
-                handle.write(json.dumps(row) + "\n")
+        write_jsonl(path, self.to_terms(), exist_ok=True)
 
     @classmethod
     def from_rows(cls, rows: list[dict], numbers: np.ndarray | None = None):
         """Invert `to_rows`, converting back to ASE units."""
-        grouped: dict[str, list[dict]] = {}
-        for row in rows:
-            grouped.setdefault(row["type"], []).append(row)
+        return cls.from_terms([term_from_disk(row) for row in rows], numbers)
 
-        terms = {}
-        for term, entries in grouped.items():
-            atoms = np.array(
-                [[int(v) for v in e["atoms"].values()] for e in entries], dtype=int
-            )
-            kwargs = {
-                key: np.array(
-                    [
-                        export_units.from_openmm(term, key, e["kwargs"][key])
-                        for e in entries
-                    ],
-                    dtype=float,
-                )
-                for key in entries[0]["kwargs"]
-            }
-            terms[term] = {"atoms": atoms, "kwargs": kwargs}
-
+    @classmethod
+    def from_terms(cls, terms: list[dict], numbers: np.ndarray | None = None):
+        """Invert `to_terms`.  Without `numbers` every atom reads as element 0."""
+        terms = terms_to_blocks(terms)
         if numbers is None:
             n_atoms = (
                 max(
@@ -205,18 +213,11 @@ class Parameters:
                 + 1
             )
             numbers = np.zeros(n_atoms, dtype=int)
-        numbers = np.asarray(numbers)
-        return cls(
-            numbers=numbers,
-            terms=terms,
-            exclusions=_exclusion_mask(terms, len(numbers)),
-        )
+        return cls(numbers=np.asarray(numbers), terms=terms)
 
     @classmethod
     def from_jsonl(cls, path: str, numbers: np.ndarray | None = None):
-        with open(path) as handle:
-            rows = [json.loads(line) for line in handle if line.strip()]
-        return cls.from_rows(rows, numbers)
+        return cls.from_terms(read_jsonl(path), numbers)
 
     # ------------------------------------------------------------------
     # OpenMM

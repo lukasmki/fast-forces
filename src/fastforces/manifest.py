@@ -34,12 +34,13 @@ from the molecule fits wherever the manifest lists that molecule, so the water
 in three proton transfers is fitted once.  A fragment it does not list is
 fitted anyway, into `<workdir>/fragments`.
 
-**`global_params` is checked, not applied.**  Those values are module constants
-the evaluators and the OpenMM exporter read at import, and REFERENCE.md §7.2 is
-explicit that a parameter set is valid only at the values it was fitted at.  A
-manifest that states a value the package does not use is refused before any
-fitting starts, rather than producing force fields that silently disagree with
-the dataset they are filed under.  Values it leaves out take the defaults.
+**`global_params` is DynamicTopology's, and it is applied.**  A manifest is the
+same file DynamicTopology loads, and its `global_params` are the constants the
+dataset is fitted at -- DynamicTopology's `forcefield/REFERENCE.md` §7.2 is
+explicit that a parameter set is valid only at those values.  `run` fits every
+entry under them (`DynamicTopology.forcefield.params.use`), so a dataset is
+fitted on exactly the surface it will be simulated on.  Values it leaves out
+take DynamicTopology's defaults.
 
 Everything is validated when the manifest is loaded -- unknown keys, duplicate
 outputs, reaction SMILES that cannot be mapped -- because the alternative is a
@@ -48,10 +49,11 @@ typo found hours into a DFT run.
 
 import json
 import traceback
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 import numpy as np
+from DynamicTopology.forcefield.params import ForceFieldParams, use
 
 from . import io
 from . import reaction as reaction_module
@@ -66,57 +68,42 @@ class ManifestError(ValueError):
 # global parameters
 # ---------------------------------------------------------------------------
 
+# `FitConfig.electrostatics` <-> `global_params.electrostatics`.
+_ELECTROSTATICS = {"acks2": "acks2", "fixed": "pointcharge"}
 
-def package_globals() -> dict:
-    """The global parameters this package evaluates at, in REFERENCE.md units.
 
-    Read from the modules rather than copied, so this cannot drift from what
-    the evaluators actually use.  `switch_radius` and `switch_width` are stated
-    in nm by the table and held in Angstrom by `lj`.
+def resolve_globals(
+    stated: dict | None, config: FitConfig, source: str, config_states: bool = False
+):
+    """The dataset's `ForceFieldParams`, reconciled with `fit_config`.
+
+    `global_params` is DynamicTopology's own block -- `ForceFieldParams` parses
+    it, unknown keys and bad values included -- and it is *applied*: `run`
+    fits the whole manifest under it, so every template is fitted on the
+    surface the dataset says it was fitted on.
+
+    `electrostatics` is the one field both blocks can state: DynamicTopology's
+    `"acks2"` / `"pointcharge"` and `FitConfig`'s `"acks2"` / `"fixed"`.  Either
+    may be given alone and the other follows; both, and they have to agree.
+    `config_states` says whether `fit_config` stated it or `config` merely
+    carries the default.
     """
-    from .forcefield import ewald, exclusions, lj, qforce, zbl
-
-    return {
-        "bond_asymptote": qforce.BOND_ASYMPTOTE,
-        "shape_decay": qforce.SHAPE_DECAY,
-        "taper_radius": zbl.TAPER_RADIUS,
-        "taper_width": zbl.TAPER_WIDTH,
-        "switch_radius": lj.SWITCH_RADIUS / 10.0,
-        "switch_width": lj.SWITCH_WIDTH / 10.0,
-        "core_fraction": lj.CORE_FRACTION,
-        "exclusion_depth": exclusions.EXCLUSION_DEPTH,
-        "exclude_coulomb": exclusions.EXCLUDE_COULOMB,
-        "gamma": ewald.GAMMA,
-        "accuracy": ewald.ACCURACY,
-        "ccoul": ewald.CCOUL,
-        "zbl_ccoul": zbl.CCOUL,
-    }
-
-
-def check_globals(stated: dict) -> None:
-    """Refuse a `global_params` block this package would not honour."""
-    actual = package_globals()
-    unknown = sorted(set(stated) - set(actual))
-    if unknown:
+    try:
+        params = ForceFieldParams.from_dict(stated or {}, source=source)
+    except ValueError as error:
+        raise ManifestError(str(error)) from error
+    wanted = _ELECTROSTATICS[config.electrostatics]
+    if "electrostatics" not in (stated or {}):
+        return replace(params, electrostatics=wanted)
+    if config_states and params.electrostatics != wanted:
         raise ManifestError(
-            f"unknown global_params {unknown}; known: {sorted(actual)}"
+            f"global_params.electrostatics={params.electrostatics!r} but "
+            f"fit_config.electrostatics={config.electrostatics!r}; they name "
+            "the same choice and have to agree"
         )
-    wrong = []
-    for key, value in stated.items():
-        expected = actual[key]
-        if isinstance(expected, bool):
-            same = value is expected
-        else:
-            same = np.isclose(float(value), float(expected), rtol=1e-9, atol=0.0)
-        if not same:
-            wrong.append(f"{key}={value!r} (package: {expected!r})")
-    if wrong:
-        raise ManifestError(
-            "global_params differ from the values this package evaluates at: "
-            + ", ".join(wrong)
-            + ". They are module constants, not fit settings -- a force field "
-            "fitted here would not be valid at the manifest's values"
-        )
+    reverse = {v: k for k, v in _ELECTROSTATICS.items()}
+    config.electrostatics = reverse[params.electrostatics]
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -155,11 +142,11 @@ def calculator_factory(spec: dict):
         spec.setdefault("verbosity", 0)
 
         def factory(atoms=None):
-            from tblite.ase import TBLite
+            from .calculators.tblite import TBLiteCalculator
 
             if atoms is None:
-                return TBLite(method=method, **spec)
-            return TBLite(
+                return TBLiteCalculator(method=method, **spec)
+            return TBLiteCalculator(
                 method=method,
                 charge=_charge(atoms),
                 multiplicity=_unpaired(atoms) + 1,
@@ -238,6 +225,8 @@ class Manifest:
     embed_seed: int = 42
     eps: float = 1e-3
     meta: dict = field(default_factory=dict)
+    # The dataset's `global_params`, resolved; see `resolve_globals`.
+    params: ForceFieldParams = field(default_factory=ForceFieldParams)
 
     @property
     def root(self) -> Path:
@@ -326,7 +315,12 @@ def load(path) -> Manifest:
     calculator = dict(fit_config.get("calculator", {"name": "tblite"}))
     calculator_factory(calculator)  # refuse an unknown backend now
 
-    check_globals(raw.get("global_params", {}))
+    params = resolve_globals(
+        raw.get("global_params"),
+        config,
+        str(path),
+        config_states="electrostatics" in fit_config,
+    )
 
     molecules = _entries(raw.get("molecules", []), "molecule", MOLECULE_KEYS, root, workdir)
     reactions = _entries(raw.get("reactions", []), "reaction", REACTION_KEYS, root, workdir)
@@ -361,6 +355,7 @@ def load(path) -> Manifest:
         embed_seed=int(fit_config.get("embed_seed", 42)),
         eps=float(fit_config.get("eps", 1e-3)),
         meta=meta,
+        params=params,
     )
 
 
@@ -417,7 +412,12 @@ def fit_molecule(manifest: Manifest, entry: Entry, calc_factory, method: str):
 
     if len(atoms) < 2:
         frame = ff.sampling.label(atoms, calc_factory, "equilibrium")
-        params = reaction_module._lone_atom(atoms, calc_factory, frame=frame)
+        params = reaction_module._lone_atom(
+            atoms,
+            calc_factory,
+            frame=frame,
+            electrostatics=manifest.config.electrostatics,
+        )
         equilibrium = frame
         meta = {
             "method": method or type(calc_factory(atoms)).__name__,
@@ -529,6 +529,11 @@ def run(manifest, calc_factory=None, log=print) -> list[Outcome]:
     """
     if not isinstance(manifest, Manifest):
         manifest = load(manifest)
+    with use(manifest.params):
+        return _run(manifest, calc_factory, log)
+
+
+def _run(manifest, calc_factory, log) -> list[Outcome]:
     factory, method = calculator_factory(manifest.calculator)
     if calc_factory is not None:
         # `parameterize` names the method after the calculator class

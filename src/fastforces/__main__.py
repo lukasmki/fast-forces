@@ -1,10 +1,18 @@
 """Command line entry point: parameterize a SMILES string, or a whole manifest.
 
     fast-forces CC#N -o acetonitrile.jsonl
-    fast-forces examples/proton-transfer/Water.json
+    fast-forces ../DynamicTopo/datasets/Water/Water.json --dry-run
+    fast-forces refit ../DynamicTopo/datasets/Water/Water.json --force-constants
+    fast-forces label molecules/ -o labelled/        # reference energies (PySCF)
+    fast-forces import-qforce qforce.xml -o mol.jsonl
+
+`refit`, `label` and `import-qforce` are the dataset tools that used to live in
+DynamicTopology's `scripts/` (`fit.py`, `compute.py`, `convert.py`); each takes
+`--help`.
 """
 
 import argparse
+import importlib
 import sys
 
 from . import FitConfig, build, parameterize
@@ -37,8 +45,15 @@ def manifest_main(argv: list[str]) -> None:
         sys.exit(1)
 
 
+# Subcommand -> module whose `main(argv)` runs it.
+SUBCOMMANDS = {"refit": "refit", "label": "label", "import-qforce": "qforce_xml"}
+
+
 def main() -> None:
     argv = sys.argv[1:]
+    if argv and argv[0] in SUBCOMMANDS:
+        module = importlib.import_module(f".{SUBCOMMANDS[argv[0]]}", __package__)
+        sys.exit(module.main(argv[1:]))
     if argv and argv[0].endswith(".json"):
         manifest_main(argv)
         return
@@ -58,13 +73,13 @@ def main() -> None:
     )
     args = parser.parse_args(argv)
 
-    from tblite.ase import TBLite
+    from .calculators.tblite import TBLiteCalculator
 
     atoms = build(args.smiles)
     config = FitConfig(temperature=args.temperature, n_mode_frames=args.mode_frames)
     params = parameterize(
         atoms,
-        lambda a: TBLite(method=args.method, verbosity=0),
+        lambda a: TBLiteCalculator(method=args.method, verbosity=0),
         config=config,
         training_set=args.training_set,
         initial=args.initial,

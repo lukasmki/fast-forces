@@ -275,10 +275,10 @@ def defaults_for(
 
     `electrostatics` selects which electrostatic term is seeded.  `"acks2"`
     gives the `atom` block above; `"fixed"` gives no electrostatic block at all,
-    because the `coulomb` term's charges are a property of the molecule rather
+    because the `charge` term's charges are a property of the molecule rather
     than of its elements and there is no element table that could supply them.
     The caller reads them off the reference calculation instead -- see
-    `fit._coulomb_block`.
+    `fit._charge_block`.
     """
     if electrostatics not in ("acks2", "fixed"):
         raise ValueError(

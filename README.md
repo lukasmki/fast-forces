@@ -1,15 +1,28 @@
 # fast-forces
 
-Fast automatic parameterization of force fields
+Fast automatic parameterization of force fields -- for
+[DynamicTopology](../DynamicTopo).
+
+**The two packages split one job.** DynamicTopology is the inference package:
+the force field itself (bonded terms, ACKS2 or fixed point charges, tapered ZBL,
+switched 12-6, the intramolecular exclusions, the EVB couplings) and the
+reactive MD that runs on it. fast-forces is everything that produces its
+parameters: sampling a reference calculator, fitting each molecule, locating
+reactions and fitting their couplings, and writing a dataset DynamicTopology
+loads. fast-forces carries no force field of its own -- every energy it fits
+against is `DynamicTopology.forcefield.evaluate`, the single-topology sum
+DynamicTopology's `System` puts on a diabat, so a template is scored during the
+fit exactly as the simulation will score it. The equations are in
+DynamicTopology's `src/DynamicTopology/forcefield/REFERENCE.md`.
 
 ## Features
 
 - Uses any ASE calculator: Fit to MLIPs, QM codes, TBLite, etc! any calculator that provides energies/forces
 - Automatic conformer generation using `openconf`: You only need a SMILES string and a reference method to get a fully parameterized force field
-- Export parameters in OpenMM or DynamicTopology format
+- Writes DynamicTopology datasets directly (`.jsonl` in nm and kJ/mol, as DynamicTopology's `io.units` converts them), and exports to OpenMM
 - Use the included FastForces calculator to immediately start running simulations
 - All training data is saved into one extended XYZ file: Everything necessary to reproduce the fit is contained in one file
-- Two electrostatics models: ACKS2 charge equilibration, whose charges are re-solved at every geometry, or fixed point charges taken from the reference calculation's Mulliken populations (`FitConfig(electrostatics="fixed")`)
+- Two electrostatics models: ACKS2 charge equilibration, whose charges are re-solved at every geometry, or fixed point charges taken from the reference calculation's Mulliken populations (`FitConfig(electrostatics="fixed")`, DynamicTopology's `pointcharge`)
 - Start a fit from an existing force field with `initial=`, rather than from the element table
 - Parameterize a *reaction* from an atom-mapped reaction SMILES: a force field per fragment, a Sella transition state, and a fitted EVB off-diagonal coupling
 
@@ -78,12 +91,13 @@ has to be constrained.
 ## Datasets from a manifest
 
 A whole dataset of molecules and reactions is described by one JSON manifest --
-see [`examples/proton-transfer/Water.json`](examples/proton-transfer/Water.json)
--- and fitted in one command:
+the same file DynamicTopology loads, with a `fit_config` block DynamicTopology
+ignores; see DynamicTopology's `datasets/Water/Water.json` -- and fitted in one
+command:
 
 ```bash
-fast-forces examples/proton-transfer/Water.json --dry-run   # validate, show the plan
-fast-forces examples/proton-transfer/Water.json
+fast-forces ../DynamicTopo/datasets/Water/Water.json --dry-run   # validate, show the plan
+fast-forces ../DynamicTopo/datasets/Water/Water.json             # fit, overwriting the dataset
 ```
 
 Each entry's `path` is an output stem relative to the manifest: a molecule
@@ -93,7 +107,7 @@ field plus:
 
 | key | default | meaning |
 | --- | --- | --- |
-| `calculator` | `{"name": "tblite"}` | `tblite` (`method`) or `pyscf` (`xc`, `basis`, and `pcm`/`pcm_eps` for implicit solvent, e.g. `"IEF-PCM"`); other keys go to the constructor |
+| `calculator` | `{"name": "tblite"}` | `tblite` (`method`; its xTB charges are what `electrostatics: "fixed"` freezes) or `pyscf` (`xc`, `basis`, and `pcm`/`pcm_eps` for implicit solvent, e.g. `"IEF-PCM"`); other keys go to the constructor |
 | `workdir` | `"training"` | where the full training sets go, mirroring each `path` |
 | `embed_seed` | 42 | seed for conformer embedding and the saddle guess |
 | `eps` | 1e-3 | coupling quench at the nearer endpoint |
@@ -108,9 +122,12 @@ the saddle search, which is what a barrierless gas-phase channel needs, and
 (`2S`); otherwise it is read from the SMILES radicals.
 
 Training sets already in `workdir` are reused, so a rerun refits without the
-reference calculator; delete one to regenerate it. `global_params` is checked
-against the constants the package evaluates at and refused if it differs --
-those are not fit settings (REFERENCE.md §7.2).
+reference calculator; delete one to regenerate it. `global_params` is
+DynamicTopology's own block (`forcefield.params.ForceFieldParams`) and it is
+*applied*: the whole manifest is fitted under it, so the dataset is fitted at
+exactly the constants it states (REFERENCE.md §7.2). Its `electrostatics` and
+`fit_config.electrostatics` name the same choice; either may be given, and both
+have to agree.
 
 ## Examples
 

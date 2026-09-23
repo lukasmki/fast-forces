@@ -51,9 +51,15 @@ def label(atoms: Atoms, calc_factory, kind: str, strict: bool = True) -> Atoms |
             raise
         return None
     # Keep whatever the calculator wrote onto the frame (pyscf writes
-    # connectivity and bond orders) but drop the live calculator.
+    # connectivity and bond orders, both write `mulliken` charges) but drop the
+    # live calculator.  What it wrote replaces an array `atoms` already carried:
+    # a Hessian frame is a copy of the labelled equilibrium, and a fragment can
+    # be sliced out of a labelled parent, so the incoming array is a stale value
+    # from another geometry.
     info = dict(frame.info)
-    arrays = {k: v for k, v in frame.arrays.items() if k not in atoms.arrays}
+    arrays = {
+        k: v for k, v in frame.arrays.items() if k not in ("numbers", "positions")
+    }
     out = atoms.copy()
     out.info.update(info)
     for k, v in arrays.items():

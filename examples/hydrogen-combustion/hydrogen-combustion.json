@@ -1,0 +1,53 @@
+{
+    "name" : "HCombustion",
+    "description": "Six fragments + two atoms and the nineteen reaction channels, computed at wb97x-v/cc-pvtz",
+    "version" : "1.0.0",
+    "author": "Lukas Kim",
+    "molecules": [
+        {"id" : 1, "smiles": "[H][H]",  "path": "molecules/mol_01"},
+        {"id" : 2, "smiles": "[O][O]",  "path": "molecules/mol_02"},
+        {"id" : 3, "smiles": "[OH]",    "path": "molecules/mol_03"},
+        {"id" : 4, "smiles": "O",       "path": "molecules/mol_04"},
+        {"id" : 5, "smiles": "[O]O",    "path": "molecules/mol_05"},
+        {"id" : 6, "smiles": "OO",      "path": "molecules/mol_06"},
+        {"id" : 7, "smiles": "[O]",     "path": "molecules/mol_07"},
+        {"id" : 8, "smiles": "[H]",     "path": "molecules/mol_08"}
+    ],
+    "reactions": [
+        {"id":  1, "smiles": "[O].[OH]>>[O][O].[H]",        "path" : "reactions/rxn_01"},
+        {"id":  2, "smiles": "[H:1][H:2].[O:3]>>[O:3][H:2].[H:1]",        "path" : "reactions/rxn_02"},
+        {"id":  3, "smiles": "[H:1][H:2].[O:3][H:4]>>[H:4][O:3][H:1].[H:2]",          "path" : "reactions/rxn_03"},
+        {"id":  4, "smiles": "[OH].[OH]>>O.[O]",            "path" : "reactions/rxn_04"},
+        {"id":  5, "smiles": "[H:1][H:2]>>[H:1].[H:2]",             "path" : "reactions/rxn_05"},
+        {"id":  6, "smiles": "[O][O]>>[O].[O]",             "path" : "reactions/rxn_06"},
+        {"id":  7, "smiles": "[OH]>>[O].[H]",               "path" : "reactions/rxn_07"},
+        {"id":  8, "smiles": "O>>[OH].[H]",                 "path" : "reactions/rxn_08"},
+        {"id":  9, "smiles": "[O]O>>[O][O].[H]",            "path" : "reactions/rxn_09"},
+        {"id": 10, "smiles": "[O:1][O:2][H:3].[H:4]>>[O:1][O:2].[H:3][H:4]",     "path" : "reactions/rxn_10"},
+        {"id": 11, "smiles": "[O]O.[H]>>[OH].[OH]",         "path" : "reactions/rxn_11"},
+        {"id": 12, "smiles": "[O]O.[O]>>[O][O].[OH]",       "path" : "reactions/rxn_12"},
+        {"id": 13, "smiles": "[O][O].O>>[O]O.[OH]",         "path" : "reactions/rxn_13"},
+        {"id": 14, "smiles": "OO.[O][O]>>[O]O.[O]O",        "path" : "reactions/rxn_14"},
+        {"id": 15, "smiles": "OO>>[OH].[OH]",               "path" : "reactions/rxn_15"},
+        {"id": 16, "smiles": "[OH].O>>OO.[H]",              "path" : "reactions/rxn_16"},
+        {"id": 17, "smiles": "[O:1][O:2][H:3].[H:4][H:5]>>[H:4][O:1][O:2][H:3].[H:5]",         "path" : "reactions/rxn_17"},
+        {"id": 18, "smiles": "[O]O.[OH]>>OO.[O]",           "path" : "reactions/rxn_18"},
+        {"id": 19, "smiles": "OO.[OH]>>[O]O.O",             "path" : "reactions/rxn_19"}
+    ],
+    "global_params": {
+        "bond_asymptote": 1.0,
+        "taper_radius": 1.5,
+        "taper_width": 0.12,
+        "switch_radius": 2.2,
+        "core_fraction": 0.4,
+        "exclusion_depth": 3,
+        "exclude_coulomb": true,
+        "gamma": 2.0,
+        "electrostatics": "pointcharge"
+    },
+    "fit_config": {
+        "calculator": {"name": "tblite"},
+        "workdir": "training",
+        "electrostatics": "fixed"
+    }
+}

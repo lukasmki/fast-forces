@@ -8,10 +8,13 @@ fit, so the bonded parameters absorb only what is left over.
 
 The three pair sums run over *every* pair with no reference to the bond graph --
 ZBL switched off outside 1.5 A, the 12-6 switched on outside 2.2 A -- and
-`forcefield/exclusions.py` then removes every pair within three bonds of
+DynamicTopology's exclusion terms then remove every pair within three bonds of
 another.  That is the one part of the nonbonded energy that knows about bonding
 at all, and it is what makes a reactive surface possible: it is the only place a
 diabatic state's own topology reaches the nonbonded terms.
+
+Every piece below is DynamicTopology's own -- the force field this package fits
+*for* -- so the sum is exactly what a reactive simulation charges this molecule.
 
 Acetonitrile has six atoms and graph diameter 3, so *every* pair is excluded and
 the three sums cancel to zero between them.  Watching that happen is the first
@@ -21,13 +24,13 @@ half of this example; the second is what it means for `r0`.
 """
 
 import numpy as np
+from DynamicTopology.forcefield.electrostatics import Electrostatics
+from DynamicTopology.forcefield.lj import LennardJones
+from DynamicTopology.forcefield.qforce import QForce
+from DynamicTopology.forcefield.zbl import ZBL
 
 import fastforces as ff
-from fastforces.forcefield import exclusions
-from fastforces.forcefield.acks2 import ACKS2
-from fastforces.forcefield.lj import LennardJones
-from fastforces.forcefield.qforce import QForce
-from fastforces.forcefield.zbl import ZBL
+from fastforces.calculator import term_dict_for
 
 from _common import banner, fitted
 
@@ -36,44 +39,45 @@ banner(__doc__)
 atoms, params, training = fitted("CC#N", name="acetonitrile")
 pos, cell, pbc = atoms.get_positions(), np.array(atoms.cell), atoms.pbc
 numbers = atoms.get_atomic_numbers()
-mask = params.exclusions
 
-# All five work in eV and Angstrom and read `params.terms` directly; each
-# returns `(energy, forces, virial)`.  `QForce` gets `bonded_terms()` rather
-# than the whole dict only so that it does not evaluate `reference` and count
-# `E0` a second time.
+# The vectorized term dict DynamicTopology evaluates: the fitted terms plus the
+# exclusion terms it derives from the bonds.  Each piece returns
+# `(energy, forces, virial)` in eV and Angstrom.
 #
-# The electrostatic term takes a *screen* rather than a subtraction: its charges
-# come from a solve whose matrix holds the kernel, so masking that kernel would
-# make the charges depend on the bond graph -- which they must not, or a
-# reaction's two states would disagree about them.  So the charges are solved
-# once, unmasked, and the exclusion is applied afterwards as a weight on the
-# energy contraction.
-indices = params.terms["atom"]["atoms"][:, 0]
-screen = exclusions.screen([mask[np.ix_(indices, indices)]], [1.0], len(indices))
-sigma, eps = exclusions.lj_parameters(params.terms, len(numbers))
+# The Coulomb exclusion is a *screen* inside the electrostatic term rather than
+# a subtraction: its charges come from a solve whose matrix holds the kernel, so
+# masking that kernel would make the charges depend on the bond graph -- which
+# they must not, or a reaction's two states would disagree about them.  So the
+# charges are solved once, unmasked, and the exclusion weights the contraction.
+td = term_dict_for(params)
+additive = {k: v for k, v in td.items() if k in ("exclusion", "zblexclusion")}
+bonded = {
+    k: v
+    for k, v in td.items()
+    if k not in additive and k not in ("atom", "lennardjones", "coulombexclusion")
+}
 
 pieces = {
-    "bonded (QForce)": QForce(bond_form="morse")(pos, pbc, cell, params.bonded_terms()),
-    "ACKS2 (screened)": ACKS2()(pos, pbc, cell, params.terms, screen),
-    "Lennard-Jones": LennardJones()(pos, pbc, cell, params.terms),
+    "bonded (QForce)": QForce(bond_form="morse")(pos, pbc, cell, bonded),
+    "ACKS2 (screened)": Electrostatics()(pos, pbc, cell, td),
+    "Lennard-Jones": LennardJones()(pos, pbc, cell, td),
     "ZBL": ZBL()(pos, numbers, pbc, cell),
-    "exclusions": exclusions.additive(pos, numbers, pbc, cell, mask, sigma, eps),
+    "exclusions": QForce(bond_form="morse")(pos, pbc, cell, additive),
 }
 
 print(f"{'term':18s} {'energy (eV)':>13s} {'max |force|':>13s}")
 for name, (energy, forces, _) in pieces.items():
     print(f"{name:18s} {energy:13.4f} {abs(forces).max():13.4f}")
-print(f"{'E0 (reference)':18s} {params.e0:13.4f} {0.0:13.4f}")
+print(f"  (the bonded row includes E0 = {params.e0:.4f} eV, the reference shift)")
 
-total = sum(e for e, _, _ in pieces.values()) + params.e0
+total = sum(e for e, _, _ in pieces.values())
 print(f"{'total':18s} {total:13.4f}")
 print(f"{'FastForces':18s} {ff.evaluate(atoms, params)[0]:13.4f}  (agrees)\n")
 
 lj_energy = pieces["Lennard-Jones"][0]
 zbl_energy, zbl_forces, _ = pieces["ZBL"]
 residue = lj_energy + zbl_energy + pieces["exclusions"][0]
-n_pairs = int(mask.sum()) // 2
+n_pairs = len(additive["zblexclusion"]["atoms"])
 print(
     f"""The 12-6 and ZBL sums are {lj_energy:+.4f} and {zbl_energy:+.4f} eV, and the
 exclusions take back {pieces["exclusions"][0]:+.4f}: the three add to {residue:+.1e} eV.

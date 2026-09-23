@@ -14,6 +14,7 @@ def ase_to_pyscf(
     basis: str = "cc-pvtz",
     charge: int | None = None,
     spin: int | None = None,
+    verbose: int | None = None,
 ) -> gto.Mole:
     Z = atoms.get_atomic_numbers()
     R = atoms.get_positions()
@@ -21,11 +22,14 @@ def ase_to_pyscf(
     molstr = "\n".join(
         f"{Z[i]} {R[i][0]} {R[i][1]} {R[i][2]}\n" for i in range(len(atoms))
     )
+    # PySCF's own default verbosity unless one is asked for.
+    options = {} if verbose is None else {"verbose": verbose}
     mol: gto.Mole = gto.M(
         atom=molstr,
         basis=basis,
         charge=charge,
         spin=spin,
+        **options,
     )
     return mol
 
@@ -74,6 +78,29 @@ def bo(mf: scf.hf.SCF, ov=None, dm=None):
     return B
 
 
+# Mayer bond order a pair needs to count as bonded.  Every pair of atoms has a
+# positive one, so without a cut every molecule is fully connected; the
+# nonbonded pairs of H2O, HO2 and H2O2 sit below 0.03 and their bonds above
+# 0.75, and 0.5 is the conventional line between them.
+BOND_THRESHOLD = 0.5
+
+
+def perceive_bonds(bond_order: np.ndarray, threshold: float = BOND_THRESHOLD) -> list:
+    """`[(i, j, order), ...]` for every pair bonded in the `bo` matrix.
+
+    `order` is rounded to 1, 2 or 3: a connectivity is a molecular graph, and
+    `molify` -- which turns it into an RDKit molecule -- takes only integer
+    bond orders.  The fractional values stay in the frame's `bond-order` array.
+    """
+    bonds = []
+    n = len(bond_order)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if (bij := bond_order[i, j]) >= threshold:
+                bonds.append((i, j, float(min(max(round(bij), 1), 3))))
+    return bonds
+
+
 def mulliken(mf: scf.hf.SCF, ov=None, dm=None):
     """Mulliken partial charges, one per atom, in elementary charges.
 
@@ -87,11 +114,12 @@ def mulliken(mf: scf.hf.SCF, ov=None, dm=None):
     overlap population straight down the middle and is notoriously
     basis-dependent, which with `cc-pvtz` is not a small caveat.  It is here
     because it costs one diagonal of a matrix product that `bo` already forms,
-    and because the `coulomb` term needs *some* per-atom charge to start from.
-    See `forcefield/coulomb.py`.
+    and because the fixed-charge `charge` term needs *some* per-atom charge to
+    start from.  See DynamicTopology's `forcefield/pointcharge.py`.
 
-    The charges sum to the total molecular charge by construction, which is the
-    condition `forcefield/ewald.py` needs for its periodic sum to be legitimate.
+    The charges sum to the total molecular charge by construction, which is what
+    a template's `charge` terms have to do: DynamicTopology's point charges move
+    the excess charge with the proton only if every template carries its own.
     """
     mol: gto.Mole = mf.mol
     ao_idx = np.asarray([x[0] for x in mol.ao_labels(fmt=False)])
@@ -182,6 +210,8 @@ class PySCFCalculator(Calculator):
         self.cp: bool = cp
         self.pcm: str | None = pcm
         self.pcm_eps: float = pcm_eps
+        # the connectivity last written onto a frame; see `calculate`
+        self._perceived: list | None = None
 
         self.energy_pipe = (
             gto.M()
@@ -302,12 +332,17 @@ class PySCFCalculator(Calculator):
         charges = mulliken(self.mf, dm=dm)
         atoms.set_array("mulliken", charges, float)
 
-        conn = []
-        for i in range(len(atoms)):
-            for j in range(i + 1, len(atoms)):
-                if (bij := bond_order[i, j]) > 0:
-                    conn.append((i, j, bij))
-        atoms.info["connectivity"] = conn
+        # A connectivity already on the frame is its topology -- from the
+        # SMILES, or the diabatic state a reaction frame stands for -- and is
+        # an input, not something a single point gets to redefine.  Only a
+        # frame without one gets it perceived from the bond orders, and one
+        # this calculator perceived earlier (the same list object: `copy`
+        # deep-copies `info`) is re-perceived, so a relaxation or an MD run
+        # follows the bonds as they change.
+        stated = atoms.info.get("connectivity")
+        if stated is None or stated is self._perceived:
+            self._perceived = perceive_bonds(bond_order)
+            atoms.info["connectivity"] = self._perceived
 
         self.results = {
             "energy": energy * units.Hartree,

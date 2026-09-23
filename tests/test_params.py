@@ -6,10 +6,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from DynamicTopology.io import units
+
 import fastforces as ff
-from fastforces.export import units
 from fastforces.params import Parameters
-from fastforces.topology import enumerate_terms
 
 # Acetonitrile, in both export formats: the same force field written twice, so
 # each file is a check on the other.  `04_export_formats.py` regenerates them.
@@ -33,7 +33,6 @@ def example_params():
     """
     atoms = ff.build(EXAMPLE_SMILES)
     params = Parameters.from_jsonl(EXAMPLE_JSONL, numbers=atoms.get_atomic_numbers())
-    params.exclusions = enumerate_terms(atoms).exclusions
     return atoms, params
 
 
@@ -60,12 +59,9 @@ def test_round_trip_through_a_file(tmp_path):
 
 
 def test_units_convert_to_physical_values():
-    """Spot-check the table against the example's own numbers."""
-    # The C-N triple bond's `r0`, as `acetonitrile.jsonl` carries it.
-    assert units.from_openmm("bond", "r0", 0.10319731347263705) == pytest.approx(
-        1.0319731347263705
-    )
-    assert units.from_openmm("bond", "D", 680.6783954015332) == pytest.approx(
+    """Spot-check the table DynamicTopology reads the files with."""
+    assert units.from_disk("bond", "r0", 0.11433) == pytest.approx(1.1433)
+    assert units.from_disk("bond", "D", 680.6783954015332) == pytest.approx(
         7.0548, abs=1e-4
     )
     # ACKS2 parameters are the exception: both formats carry them in eV/Angstrom
@@ -220,10 +216,10 @@ EXAMPLE_CHARGES = np.array([-0.35, 0.20, -0.30, 0.15, 0.15, 0.15])
 
 
 def fixed_charge_params():
-    """The example field with its `atom` block swapped for a `coulomb` one."""
+    """The example field with its `atom` block swapped for a `charge` one."""
     atoms, params = example_params()
     del params.terms["atom"]
-    params.terms["coulomb"] = {
+    params.terms["charge"] = {
         "atoms": np.arange(len(EXAMPLE_CHARGES))[:, None],
         "kwargs": {"q": EXAMPLE_CHARGES.copy()},
     }
@@ -234,7 +230,8 @@ def test_electrostatics_names_the_term_in_use():
     _, acks2 = example_params()
     assert acks2.electrostatics() == "atom"
     _, fixed = fixed_charge_params()
-    assert fixed.electrostatics() == "coulomb"
+    assert fixed.electrostatics() == "charge"
+    assert fixed.global_electrostatics() == "pointcharge"
     assert Parameters(numbers=np.array([1])).electrostatics() is None
 
 
@@ -246,22 +243,22 @@ def test_electrostatics_rejects_a_field_carrying_both():
         params.electrostatics()
 
 
-def test_coulomb_charges_round_trip_unconverted(tmp_path):
+def test_fixed_charges_round_trip_unconverted(tmp_path):
     """`q` is in elementary charges, so both formats carry the same number."""
     _, params = fixed_charge_params()
     path = tmp_path / "fixed.jsonl"
     params.to_jsonl(str(path))
 
     rows = [json.loads(line) for line in open(path) if line.strip()]
-    written = [r for r in rows if r["type"] == "coulomb"]
+    written = [r for r in rows if r["type"] == "charge"]
     assert len(written) == len(EXAMPLE_CHARGES)
     assert [r["kwargs"]["q"] for r in written] == pytest.approx(EXAMPLE_CHARGES)
     # and `p0`, the slot name the per-atom terms use
     assert [r["atoms"]["p0"] for r in written] == list(range(len(EXAMPLE_CHARGES)))
 
     reloaded = Parameters.from_jsonl(str(path), numbers=params.numbers)
-    assert reloaded.electrostatics() == "coulomb"
-    assert np.allclose(reloaded.terms["coulomb"]["kwargs"]["q"], EXAMPLE_CHARGES)
+    assert reloaded.electrostatics() == "charge"
+    assert np.allclose(reloaded.terms["charge"]["kwargs"]["q"], EXAMPLE_CHARGES)
 
 
 def test_calculator_gradient_with_fixed_charges():
@@ -299,7 +296,7 @@ def test_openmm_export_needs_no_geometry_for_fixed_charges():
     """Nothing to freeze, so the electrostatic force is written either way.
 
     An ACKS2 field exported without `positions` loses its electrostatics -- the
-    charges can only be solved at a geometry.  A `coulomb` field does not, and
+    charges can only be solved at a geometry.  A `charge` field does not, and
     the exported charges are the parameters themselves.
     """
     pytest.importorskip("openmm")
