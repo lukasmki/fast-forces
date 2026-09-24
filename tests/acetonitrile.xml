@@ -15,7 +15,7 @@
 	</Particles>
 	<Constraints/>
 	<Forces>
-		<Force cutoff="1" energy="g*(u+du*min(r-rc,0)); g=1/(1+exp(zs)); zs=max(-sw_clamp,min(sw_clamp,-(r-sw_r)/sw_w)); u=4*B*(A12/re12-A6/re6); du=-(24*B/re)*(2*A12/re12-A6/re6); re12=re6*re6; re6=re^6; re=max(r,rc); rc=core_frac*A; A12=A6*A6; A6=A^6; B=sqrt(B1*B2); A=sqrt(A1*A2)" forceGroup="0" method="0" name="LennardJones" switchingDistance="-1" type="CustomNonbondedForce" useLongRangeCorrection="0" useSwitchingFunction="0" version="3">
+		<Force cutoff="1" energy="g*4*B*(q*q-q); g=1/(1+exp(zs)); zs=max(-sw_clamp,min(sw_clamp,-(r-sw_r)/sw_w)); q=A6/(soft_c*A6+r^6); A6=A^6; B=sqrt(B1*B2); A=sqrt(A1*A2)" forceGroup="0" method="0" name="LennardJones" switchingDistance="-1" type="CustomNonbondedForce" useLongRangeCorrection="0" useSwitchingFunction="0" version="3">
 			<PerParticleParameters>
 				<Parameter name="A"/>
 				<Parameter name="B"/>
@@ -23,7 +23,7 @@
 			<GlobalParameters>
 				<Parameter default=".22000000000000003" name="sw_r"/>
 				<Parameter default=".012" name="sw_w"/>
-				<Parameter default=".4" name="core_frac"/>
+				<Parameter default=".01" name="soft_c"/>
 				<Parameter default="300" name="sw_clamp"/>
 			</GlobalParameters>
 			<ComputedValues/>

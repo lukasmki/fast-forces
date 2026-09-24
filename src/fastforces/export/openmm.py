@@ -23,7 +23,7 @@ is worse than useless.  The constants are read from DynamicTopology's *active*
     written in, so an angle `k` means the same well on both sides.
   * Both nonbonded pair terms carry a Fermi switch -- `zbl.taper` switching ZBL
     off outside 1.5 A, `lj.switch` switching the 12-6 on outside 2.2 A, and
-    `core_fraction` replacing the `r**-12` divergence with a tangent.  A
+    `soft_core` replacing the `r**-12` divergence with a finite core.  A
     transcription that dropped any of those would be a different force field at
     exactly the separations bonded pairs sit at.
   * All three nonbonded forces carry the pairs within `exclusion_depth` bonds as
@@ -88,17 +88,16 @@ DIHEDRALANGLEANGLE = (
     "*(cos(angle(p1,p2,p3))-cos(theta0_1))*(cos(angle(p2,p3,p4))-cos(theta0_2))"
 )
 PERIODICDIHEDRAL = "k*(1+cos(n*theta-phi0))"
-# `lj.pair_potential`, transcribed: a 12-6 that is switched *on* outside
-# `SWITCH_RADIUS`, and that continues along its own tangent inside
-# `CORE_FRACTION * sigma` instead of diverging as `r**-12`.  Both pieces matter
-# here and not only in the calculator -- the term is applied to bonded pairs, so
-# the exported system evaluates it at bond lengths too.
+# `lj.pair_potential`, transcribed: a soft-core 12-6, `4 B (1/s**2 - 1/s)` with
+# `s = soft_c + (r/A)**6`, switched *on* outside `SWITCH_RADIUS`.  Both pieces
+# matter here and not only in the calculator -- the term is applied to bonded
+# pairs, so the exported system evaluates it at bond lengths too.  `1/s` is
+# written as `A6/(soft_c*A6 + r**6)` so that a zero sigma reads 0 rather than
+# dividing by it, which the calculator does with a mask instead.
 LENNARDJONES = (
-    "g*(u+du*min(r-rc,0));"
+    "g*4*B*(q*q-q);"
     " g=1/(1+exp(zs)); zs=max(-sw_clamp,min(sw_clamp,-(r-sw_r)/sw_w));"
-    " u=4*B*(A12/re12-A6/re6); du=-(24*B/re)*(2*A12/re12-A6/re6);"
-    " re12=re6*re6; re6=re^6; re=max(r,rc); rc=core_frac*A;"
-    " A12=A6*A6; A6=A^6; B=sqrt(B1*B2); A=sqrt(A1*A2)"
+    " q=A6/(soft_c*A6+r^6); A6=A^6; B=sqrt(B1*B2); A=sqrt(A1*A2)"
 )
 # `zbl.pair_potential`, transcribed, including `zbl.taper`: the screened-nuclear
 # form is switched off outside `TAPER_RADIUS` so that it does not reach into the
@@ -188,10 +187,10 @@ def _nonbonded_forces(params, positions, edge):
         lj.addPerParticleParameter("A")
         lj.addPerParticleParameter("B")
         # In Angstrom in DynamicTopology, so both take `u.LENGTH` here.
-        # `core_frac` is a fraction of sigma and converts by 1.
+        # `soft_c` is dimensionless and converts by 1.
         lj.addGlobalParameter("sw_r", ff.switch_radius * u.LENGTH)
         lj.addGlobalParameter("sw_w", ff.switch_width * u.LENGTH)
-        lj.addGlobalParameter("core_frac", ff.core_fraction)
+        lj.addGlobalParameter("soft_c", ff.soft_core)
         lj.addGlobalParameter("sw_clamp", SWITCH_CLAMP)
         sigma = _converted(params, "lennardjones", "sigma")
         eps = _converted(params, "lennardjones", "eps")
