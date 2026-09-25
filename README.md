@@ -121,6 +121,18 @@ entry may give `"frames"` -- reactant, TS and product in one extxyz -- to skip
 the saddle search, which is what a barrierless gas-phase channel needs, and
 `"amplitude"` to fix the coupling amplitude.
 
+A reaction whose `<path>.xyz` is already in place also skips the search: its
+reactant, TS and product are taken as the reaction's geometry. That is how
+[`examples/hydrogen-combustion`](examples/hydrogen-combustion) is set up, with
+the stationary points of DynamicTopology's HCombustion dataset in `reactions/`.
+Only the geometries are used. They are renumbered onto the mapped SMILES by
+matching elements and the bonds of both ends, since a dataset's atom order is
+rarely the SMILES's. Each frame is then relabelled with the manifest's
+calculator at the entry's spin, because a barrier from another method would
+not sit on the same zero as the fragment fits. The labelled frames are cached
+in `workdir` like a searched path. To search again, delete both the cached
+frames and `<path>.xyz`. An explicit `"frames"` file outranks the output file.
+
 Spin is `2S`, the number of unpaired electrons, and is used only for fitting --
 DynamicTopology reads nothing from an entry but its `id` and `path`. A molecule
 entry may give `"spin"`; otherwise it is read from the SMILES radicals. A
@@ -138,10 +150,15 @@ the transition state and the product individually:
 A fission is fitted from its reactant alone, so it takes `"spin"` or `"spin_r"`
 and refuses the other two. A value the electron count does not allow is refused
 when the manifest is loaded, and a cached training set or `"frames"` file at a
-different spin is refused rather than reused.
+different spin is refused rather than reused. So is an output `<path>.xyz`
+that states a different spin, since its geometries are stationary points of
+another surface.
 
 Training sets already in `workdir` are reused, so a rerun refits without the
-reference calculator; delete one to regenerate it. `global_params` is
+reference calculator; delete one to regenerate it. A molecule training set
+written before the per-bond asymptote was fitted (see below) gets its fragment
+single points added on the next run, and every other frame in it is kept.
+`global_params` is
 DynamicTopology's own block (`forcefield.params.ForceFieldParams`) and it is
 *applied*: the whole manifest is fitted under it, so the dataset is fitted at
 exactly the constants it states (REFERENCE.md §7.2). Its `electrostatics` and
@@ -168,6 +185,26 @@ DynamicTopology.
 4. [optional] Run molecular dynamics to obtain extra structure
 5. Fit or use reference nonbonded potential parameters
 6. Fit all force field terms via regression
+
+## Where a bond ends up when it breaks
+
+A Morse bond's stretched branch climbs a well `Dw = D + h` and levels off `h`
+above zero. An EVB fission needs the bonded state to finish *above* its
+fragments, so that the two diabats cross. Near-equilibrium frames cannot see
+where the curve ends, and the fitted `D` is not the dissociation energy. Left
+alone, `h = bond_asymptote` put the limit wherever `D` happened to fall: 0.28
+eV *below* two H atoms for H2 at B3LYP, whose diabats then never crossed.
+
+So each molecule's training set also carries the two fragments of each bond
+class. They are two single points at the frozen equilibrium geometry, with
+each fragment keeping its atoms' formal charges and its SMILES radicals plus
+the electrons the cut releases (the O of OH comes out triplet). The fit holds
+each class's `Dw` so that pulling the bond apart ends exactly `bond_asymptote`
+above those two energies, which is where DynamicTopology's defaults put it
+for a bond whose `D` is its dissociation energy. `h = Dw - D` is written to
+the `.jsonl`, and the fit report lists it as `asymptote_h`. It can come out
+negative when the fitted `D` overshoots: O2's is about -4 eV. Ring bonds, and
+molecules built without a SMILES, keep `bond_asymptote`.
 
 ## Starting from an existing force field
 

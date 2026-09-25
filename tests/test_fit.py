@@ -375,6 +375,8 @@ def _with_mulliken(path, charges, out):
     """
     data = io.read_training_set(path)
     for frame in data.frames:
+        if frame.info.get("frame_kind") == "fragment":
+            continue  # another molecule; `fit` never reads its charges
         frame.set_array("mulliken", np.asarray(charges, dtype=float), float)
     io.write_training_set(str(out), data.frames, meta=data.meta)
     return str(out)
@@ -511,7 +513,8 @@ def test_the_fixed_charge_fit_is_as_accurate(tmp_path, h2o2_fit):
         _with_mulliken(path, charges, tmp_path / "accuracy.xyz"),
         config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
     )
-    frames = io.read_training_set(path).frames
+    data = io.read_training_set(path)
+    frames = [f for f in data.frames if f.info.get("frame_kind") != "fragment"]
 
     fixed_energy, fixed_force = _score(fixed, frames)
     acks2_energy, acks2_force = _score(acks2_params, frames)

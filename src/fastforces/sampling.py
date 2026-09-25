@@ -286,3 +286,111 @@ def rotatable_dihedrals(atoms: Atoms) -> list[tuple[int, int, int, int]]:
         return [tuple(int(i) for i in r.dihedral_atoms) for r in model.rotors]
     except Exception:
         return []
+
+
+def bridge_bonds(topology) -> dict[int, tuple[int, int]]:
+    """One bond per bond class whose removal splits the molecule in two.
+
+    Keyed by class.  A ring bond has no fragments to break into -- stretching
+    it opens the ring rather than dissociating anything -- so a class of ring
+    bonds only is absent, and its asymptote stays `bond_asymptote`.
+    """
+    import networkx as nx
+
+    bridges = {frozenset(e) for e in nx.bridges(topology.graph)}
+    out: dict[int, tuple[int, int]] = {}
+    for (i, j), c in zip(topology.atoms["bond"], topology.classes["bond"]):
+        if int(c) not in out and frozenset((int(i), int(j))) in bridges:
+            out[int(c)] = (int(i), int(j))
+    return out
+
+
+def _cut_fragments(smiles: str, atoms: Atoms, graph, bond) -> list[tuple]:
+    """`[(indices, 2S), (indices, 2S)]`: the two sides of cutting `bond` homolytically.
+
+    Each side keeps the radicals its atoms carry in `smiles` and gains one
+    electron per unit of the bond order it loses, all high-spin coupled -- the
+    convention `Reaction.spin` and a manifest molecule's default spin follow,
+    so the fragments come out at the spin the dataset fits them at (the O of
+    OH -> O + H at the triplet, not the singlet the electron count allows).
+
+    The SMILES is where the radicals and bond orders are stated, and its atoms
+    are matched onto `atoms` by graph isomorphism, since nothing promises the
+    two share an order.
+    """
+    import networkx as nx
+    from networkx.algorithms.isomorphism import GraphMatcher
+    from rdkit import Chem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    reference = nx.Graph()
+    reference.add_nodes_from(
+        (a.GetIdx(), {"Z": a.GetAtomicNum()}) for a in mol.GetAtoms()
+    )
+    reference.add_edges_from(
+        (b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mol.GetBonds()
+    )
+    target = nx.Graph()
+    target.add_nodes_from(
+        (k, {"Z": int(z)}) for k, z in enumerate(atoms.get_atomic_numbers())
+    )
+    target.add_edges_from(graph.edges)
+    matcher = GraphMatcher(target, reference, node_match=lambda a, b: a["Z"] == b["Z"])
+    mapping = next(matcher.isomorphisms_iter(), None)  # atoms index -> SMILES index
+    if mapping is None:
+        raise ValueError(f"the geometry is not bonded as {smiles!r} says")
+
+    i, j = bond
+    order = int(round(mol.GetBondBetweenAtoms(mapping[i], mapping[j]).GetBondTypeAsDouble()))
+    cut = graph.copy()
+    cut.remove_edge(i, j)
+    sides = []
+    for end in (i, j):
+        indices = sorted(nx.node_connected_component(cut, end))
+        radicals = sum(
+            mol.GetAtomWithIdx(mapping[k]).GetNumRadicalElectrons() for k in indices
+        )
+        sides.append((indices, radicals + order))
+    return sides
+
+
+def fragment_frames(equilibrium: Atoms, calc_factory, topology=None) -> list[Atoms]:
+    """The two fragments of each bond class, labelled where they sit.
+
+    What a molecule's stretched limit is measured against.  Cutting one bond
+    of each class (`bridge_bonds`) leaves two fragments, each labelled as a
+    single point at its frozen equilibrium geometry: the dissociated diabat an
+    EVB crossing hands over to is evaluated at exactly those geometries, so
+    the vertical energy is the one it has to reach, not the relaxed one.  The
+    fragments carry the formal charges of their atoms and the spins
+    `_cut_fragments` assigns.
+
+    Tagged `"fragment"`, with `fragment_bond` the parent bond cut and
+    `fragment_atoms` the parent indices each one holds, so `fit` can pair them
+    up again.  Nothing is returned without `info["smiles"]`, which is where
+    the spins come from, and a pair either of whose calculations fails is
+    dropped: its class keeps the default asymptote.
+    """
+    from .topology import enumerate_terms, perceive
+
+    smiles = equilibrium.info.get("smiles")
+    if smiles is None or len(equilibrium) < 2:
+        return []
+    if topology is None:
+        topology = enumerate_terms(equilibrium, perceive(equilibrium))
+    frames = []
+    for bond in bridge_bonds(topology).values():
+        pair = []
+        for indices, spin in _cut_fragments(smiles, equilibrium, topology.graph, bond):
+            fragment = Atoms(
+                numbers=equilibrium.get_atomic_numbers()[indices],
+                positions=equilibrium.get_positions()[indices],
+                charges=equilibrium.get_initial_charges()[indices],
+            )
+            fragment.info.update(
+                spin=int(spin), fragment_bond=list(bond), fragment_atoms=list(indices)
+            )
+            pair.append(label(fragment, calc_factory, "fragment", strict=False))
+        if all(frame is not None for frame in pair):
+            frames += pair
+    return frames

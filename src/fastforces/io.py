@@ -72,6 +72,86 @@ def rebuild_hessian(equilibrium: Atoms, frames: list[Atoms]) -> np.ndarray:
     return 0.5 * (h + h.T)
 
 
+# ---------------------------------------------------------------------------
+# connectivity through extxyz
+# ---------------------------------------------------------------------------
+#
+# ASE's extxyz does not round-trip an *empty* `connectivity`, which is what the
+# product frame of a fission carries.  A Python `[]` is written `"_JSON []"`
+# and read back as a 1-D empty float array; that array is then written as a
+# bare `connectivity=`, and on the next read the key swallows whatever follows
+# it -- `connectivity="pbc=F F F"`, and the `pbc` or `frame_kind` or `energy`
+# it ate is gone.  DynamicTopology then iterates the string as a bond list and
+# fails.  A file fast-forces reads and writes back (a cached reaction path, a
+# relabelled one) did exactly that on the second run.  So every frame is
+# written with plain-list connectivity (`write_frames`), and every frame read
+# has a mangled one repaired (`read_frames`): the mangling only ever happens
+# to an empty list, so a string there always means `[]` plus one lost key.
+
+
+def _plain(connectivity) -> list:
+    """`[[i, j, order or None], ...]` from whatever extxyz handed back."""
+    rows = []
+    for row in connectivity:
+        row = list(np.atleast_1d(row))
+        order = row[2] if len(row) > 2 else None
+        if order is not None and not (isinstance(order, float) and np.isnan(order)):
+            order = float(order)
+        else:
+            order = None
+        rows.append([int(row[0]), int(row[1]), order])
+    return rows
+
+
+def _parsed(text: str):
+    """An extxyz info value as ASE would have typed it."""
+    for kind in (int, float):
+        try:
+            return kind(text)
+        except ValueError:
+            pass
+    return {"T": True, "F": False}.get(text, text)
+
+
+def _repair(frame: Atoms) -> Atoms:
+    """Undo the empty-connectivity mangling on one frame read back."""
+    value = frame.info.get("connectivity")
+    if not isinstance(value, str):
+        if value is not None:
+            frame.info["connectivity"] = _plain(value)
+        return frame
+    frame.info["connectivity"] = []
+    key, _, text = value.partition("=")
+    text = text.strip().strip('"')
+    if not key:
+        return frame
+    if key == "pbc":
+        frame.pbc = [flag == "T" for flag in text.split()]
+    elif key == "energy":
+        from ase.calculators.singlepoint import SinglePointCalculator
+
+        results = dict(frame.calc.results) if frame.calc is not None else {}
+        frame.calc = SinglePointCalculator(frame, **results, energy=float(text))
+    else:
+        frame.info[key] = _parsed(text)
+    return frame
+
+
+def read_frames(path, index=":") -> list[Atoms]:
+    """Every frame of an extxyz file, with `connectivity` as plain lists."""
+    frames = read(str(path), index=index, format="extxyz")
+    frames = frames if isinstance(frames, list) else [frames]
+    return [_repair(frame) for frame in frames]
+
+
+def write_frames(path, frames: list[Atoms], append: bool = False) -> None:
+    """Write `frames` to extxyz with plain-list `connectivity`, so it reads back."""
+    for frame in frames:
+        if "connectivity" in frame.info and not isinstance(frame.info["connectivity"], str):
+            frame.info["connectivity"] = _plain(frame.info["connectivity"])
+    write(str(path), frames, format="extxyz", append=append)
+
+
 def write_training_set(
     path: str, frames: list[Atoms], meta: dict | None = None
 ) -> None:
@@ -87,13 +167,12 @@ def write_training_set(
             frames[0].info[key] = (
                 json.dumps(value) if isinstance(value, (dict, list)) else value
             )
-    write(path, frames, format="extxyz")
+    write_frames(path, frames)
 
 
 def read_training_set(path: str) -> TrainingSet:
     """Read back what `write_training_set` wrote."""
-    frames = read(path, index=":", format="extxyz")
-    frames = frames if isinstance(frames, list) else [frames]
+    frames = read_frames(path)
     meta = {}
     for key in META_KEYS:
         if key in frames[0].info:

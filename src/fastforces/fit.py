@@ -34,11 +34,16 @@ Bonds are the exception to the linearity, and are fit in a separate nonlinear
 block.  Two reasons, and both are forced:
 
   * The Morse exponent is `sqrt(k / 2D)`, so a Morse bond is not linear in `k`.
-    Its per-bond asymptote `h` is *not* fitted here: it only lifts the
-    stretched branch far out, which near-equilibrium training frames cannot
-    see, so a bond fitted here reads the dataset's `bond_asymptote`.  `h` is a
-    dataset-level quantity, fitted against the reaction barriers by
-    `refine.fit_force_constants`.
+    Its per-bond asymptote `h` is not *fitted* to the training frames, which
+    cannot see where the stretched branch ends up, but it is *solved*: the
+    training set carries the two fragments of each bond class
+    (`sampling.fragment_frames`), and the stretched well is set so that
+    pulling the bond apart ends `bond_asymptote` above them (`_asymptotes`).
+    Left at `bond_asymptote` instead, `h` put the limit wherever the fitted `D`
+    happened to fall -- 0.28 eV *below* two H atoms for H2 at B3LYP, whose
+    bonded diabat then never crossed theirs.  A training set without fragment
+    frames still reads `bond_asymptote`.  `refine.fit_force_constants` refits
+    `h` against the reaction barriers on top of this.
   * `r0` cannot be read off the equilibrium geometry.  It is an effective
     parameter that balances whatever nonbonded baseline survives on the atoms
     the bond connects, not a measurement of the bond length -- so it is fit,
@@ -82,6 +87,7 @@ from scipy.optimize import least_squares, lsq_linear
 from ase import Atoms
 from DynamicTopology.forcefield.evaluate import evaluate_term_dict, term_dict
 from DynamicTopology.forcefield.exclusions import exclusion_terms
+from DynamicTopology.forcefield.params import active
 from DynamicTopology.forcefield.qforce import QForce
 
 from . import elements
@@ -117,8 +123,8 @@ GEOMETRIC: dict[str, dict[str, tuple[str, tuple[int, ...]]]] = {
 POSITIVE_K = ("angle",)
 
 # The bond parameters the nonlinear block refines, in the order they are packed
-# into its parameter vector.  `h` is deliberately absent; see the module
-# docstring.
+# into its parameter vector.  The stretched well `Dw` (so `h = Dw - D`) is not
+# refined: `_asymptotes` solves it from the fragments and it is held fixed here.
 _BOND_NAMES: tuple[str, ...] = ("r0", "k", "D")
 
 
@@ -343,6 +349,11 @@ def _seed_from(topology: Topology, initial: Parameters, n_atoms: int) -> _Seed:
             # values: those stay measured, because they set the bounds the
             # refinement runs under.
             seed.bond = {n: v for n, v in per_class.items() if n in _BOND_NAMES}
+            # A supplied asymptote arrives as the stretched well it fixes
+            # (`_asymptotes` says why that and not `h`), so a refit from a
+            # fitted field starts at its fixed point instead of re-solving it.
+            if "h" in per_class and "D" in per_class:
+                seed.bond["Dw"] = per_class["D"] + per_class["h"]
             continue
         supplied = {
             name: per_class[name][classes]
@@ -511,11 +522,28 @@ def _nonbonded(params, frames, graph):
     return np.array(energies), np.array(forces)
 
 
+def _bond_kwargs(shape: dict, classes: np.ndarray) -> dict:
+    """Per-bond Morse kwargs from per-class `shape`.
+
+    `shape` carries `(r0, k, D)` and, once `_asymptotes` has run, `Dw`: the
+    stretched well depth, pinned by the fragments.  `QForce` takes the
+    asymptote as `h = Dw - D`, so `h` is derived here rather than stored, and a
+    class with no fragments (`Dw` nan) keeps `bond_asymptote`.
+    """
+    kwargs = {name: shape[name][classes] for name in _BOND_NAMES}
+    if "Dw" in shape:
+        dw = shape["Dw"][classes]
+        kwargs["h"] = np.where(
+            np.isnan(dw), active().bond_asymptote, dw - kwargs["D"]
+        )
+    return kwargs
+
+
 def _bond_block(topology, qforce, all_vecs, shape):
-    """Energy and forces of every bond, from per-class `(r0, k, D)`."""
+    """Energy and forces of every bond, from per-class `(r0, k, D)` and maybe `Dw`."""
     classes = topology.classes["bond"]
     atoms = topology.atoms["bond"]
-    kwargs = {name: value[classes] for name, value in shape.items()}
+    kwargs = _bond_kwargs(shape, classes)
     energies, forces = [], []
     for vecs in all_vecs:
         energy, force, _ = qforce.compute_bond(vecs, atoms, **kwargs)
@@ -578,8 +606,12 @@ def _refine_bonds(
     """
     n = topology.n_classes("bond")
 
+    # `Dw` rides along fixed: it is solved outside this block (`_asymptotes`).
+    fixed = {name: value for name, value in shape.items() if name not in _BOND_NAMES}
+
     def unpack(x):
-        return {name: x[i * n : (i + 1) * n] for i, name in enumerate(_BOND_NAMES)}
+        refined = {name: x[i * n : (i + 1) * n] for i, name in enumerate(_BOND_NAMES)}
+        return {**refined, **fixed}
 
     def residual(x):
         energies, forces = _bond_block(topology, qforce, all_vecs, unpack(x))
@@ -621,6 +653,129 @@ def _refine_bonds(
     return unpack(result.x)
 
 
+# How far apart the two fragments are put to read the nonbonded energy the
+# stretched limit keeps, in Angstrom.  Far enough that what the fragments still
+# see of each other is the Coulomb tail of their partial charges, q_A q_B / r:
+# 2 meV at +/-0.4 e.  Nothing else reaches it -- ZBL and the 12-6 are cut off
+# long before, and the Morse exponent has underflowed to zero.
+SEPARATION: float = 1000.0
+
+# Cap on the rounds of `_asymptotes` and a refit under the result.  They end
+# when `Dw` moves by less than `cycle_tol` of itself; with `Dw` held, what moves
+# between rounds is `E0` and the minimum, which the training frames pin, so it
+# takes two to four.
+ASYMPTOTE_ROUNDS: int = 20
+
+
+def _bond_class(topology, bond) -> int:
+    pairs = [frozenset(map(int, b)) for b in topology.atoms["bond"]]
+    return int(topology.classes["bond"][pairs.index(frozenset(map(int, bond)))])
+
+
+def _asymptote_targets(training_set, topology, baseline) -> dict:
+    """Per bond class, `(bond, moving atoms, target)` for its stretched limit.
+
+    The limit is the molecule with one bond of the class pulled out to
+    infinity, its two fragments held at their equilibrium geometry.  The
+    target puts it `bond_asymptote` above the two fragments' reference energies
+    -- the place DynamicTopology's defaults put it for a bond whose `D` is its
+    dissociation energy, where the limit is `-D + (D + h) = h` above free
+    fragments and `h` defaults to `bond_asymptote`.  A fitted `D` here is not
+    the dissociation energy (the module docstring says why), so the height is
+    stated against the fragments instead of against `D`, and `h` is whatever
+    reaches it.  Without that, H2 fitted at B3LYP levels off 0.28 eV *below*
+    two H atoms and its bonded diabat never crosses theirs.
+
+    The nonbonded part of the limit is read off `baseline` -- the fit's
+    nonbonded block, before any bonded term is in it -- at `SEPARATION`, and
+    folded into the target, since it does not depend on anything being fitted.
+    """
+    fragments = training_set.of_kind("fragment")
+    if not fragments:
+        return {}
+    equilibrium = training_set.equilibrium
+    pairs: dict = {}
+    for frame in fragments:
+        bond = tuple(int(i) for i in np.atleast_1d(frame.info["fragment_bond"]))
+        pairs.setdefault(bond, []).append(frame)
+
+    targets = {}
+    for bond, pair in pairs.items():
+        if len(pair) != 2:
+            continue
+        # The side holding the bond's second atom moves off along the bond.
+        moving = next(
+            np.atleast_1d(f.info["fragment_atoms"]).astype(int)
+            for f in pair
+            if bond[1] in np.atleast_1d(f.info["fragment_atoms"])
+        )
+        positions = equilibrium.get_positions()
+        axis = positions[bond[1]] - positions[bond[0]]
+        stretched = equilibrium.copy()
+        positions[moving] += SEPARATION * axis / np.linalg.norm(axis)
+        stretched.set_positions(positions)
+        nonbonded, _ = _nonbonded(baseline, [stretched], topology.graph)
+        fragments_energy = sum(f.get_potential_energy() for f in pair)
+        target = fragments_energy + active().bond_asymptote - float(nonbonded[0])
+        targets[_bond_class(topology, bond)] = (bond, moving, target)
+    return targets
+
+
+def _asymptotes(targets, topology, qforce, vecs, shape, valence: float) -> np.ndarray:
+    """Per-class stretched well depth `Dw` that puts each limit on its target.
+
+    At the limit the cut bond's Morse term is exactly `Dw - D` (the
+    exponential has underflowed) and every other bonded term keeps its
+    equilibrium value: the fragments are rigid, and pulling one straight along
+    the bond moves no angle or dihedral.  The cross terms that carry the cut
+    bond's own stretch are the exception -- they are linear in it and have no
+    limit -- and are held at their equilibrium value too, which is what the
+    fragments' own templates (with no such term) would say.  So
+
+        E_limit = E_bonded(eq) - E_cut(eq) + (Dw - D) + E_nonbonded(apart)
+
+    **It is `Dw` that is solved, not `h`,** because the training frames cannot
+    tell the two apart.  They see the stretched branch only through its well
+    `Dw`, and `D` only through the constant `-D` the fit's `E0` absorbs -- so a
+    lower `h` is answered by a higher `D` with `Dw`, and the limit, where they
+    were.  Solved for `h` after the fit, O2 walked `D` from 6.6 to 10.1 eV over
+    six rounds with its limit 0.45 eV off and not converging.  Held fixed
+    instead, `Dw` is what the fragments say and `D` is what the compressed
+    branch says, and `h = Dw - D` is what reaches the file.
+
+    `E_bonded(eq)` carries `Dw` wherever a bond of the class is stretched at
+    equilibrium (a fitted `r0` shorter than the bond), weakly, so the solve is
+    iterated to its fixed point.  Classes with no fragments come back nan and
+    keep `bond_asymptote`.
+    """
+    n = topology.n_classes("bond")
+    atoms, classes = topology.atoms["bond"], topology.classes["bond"]
+    dw = np.array(shape["Dw"], dtype=float) if "Dw" in shape else np.full(n, np.nan)
+    for c in targets:
+        if np.isnan(dw[c]):
+            dw[c] = float(shape["D"][c]) + active().bond_asymptote
+    for _ in range(50):
+        kwargs = _bond_kwargs({**shape, "Dw": dw}, classes)
+        bonded, _, _ = qforce.compute_bond(vecs, atoms, **kwargs)
+        updated = dw.copy()
+        for c, (bond, _, target) in targets.items():
+            row = next(
+                r for r, b in enumerate(atoms) if frozenset(map(int, b)) == frozenset(bond)
+            )
+            cut, _, _ = qforce.compute_bond(
+                vecs, atoms[[row]], **{name: value[[row]] for name, value in kwargs.items()}
+            )
+            limit = valence + bonded - cut + kwargs["h"][row]
+            # A well has to stay a well.  A limit this far below the target
+            # means fragments far below the molecule, which is a reference
+            # problem and not something a Morse depth can express.
+            updated[c] = max(dw[c] + target - limit, 0.1)
+        if np.nanmax(np.abs(updated - dw)) < 1e-12:
+            return updated
+        dw = updated
+    return dw
+
+
 def fit(
     training_set,
     topology: Topology,
@@ -636,7 +791,9 @@ def fit(
     point actually moves.
     """
     config = config or FitConfig()
-    frames = training_set.frames
+    # The fragment frames are not this molecule, and are read only by
+    # `_asymptote_targets`; everything the least squares sees is the molecule.
+    frames = [f for f in training_set.frames if f.info.get("frame_kind") != "fragment"]
     equilibrium = training_set.equilibrium
     numbers = equilibrium.get_atomic_numbers()
     initial = as_parameters(initial)
@@ -701,6 +858,8 @@ def fit(
         shape = {
             name: _merge(value, seed.bond.get(name)) for name, value in shape.items()
         }
+        if "Dw" in seed.bond:
+            shape["Dw"] = seed.bond["Dw"]
 
     # --- the linear block's basis, which the parameters do not enter -------
     # `_basis_columns` evaluates every non-bond term at `k = 1`, so it depends
@@ -749,12 +908,45 @@ def fit(
     # residual barely moved.  Centering deletes that direction rather than
     # penalizing it, which leaves `D` fixed by the anharmonicity it actually
     # describes.
-    k_values = np.zeros(len(labels))
-    previous, cycles_used = None, 0
-    for cycle in range(max(1, config.n_cycles)):
-        cycles_used = cycle + 1
-        e_bond, f_bond = _bond_block(topology, qforce, all_vecs, shape)
+    def converge(shape):
+        """The alternation to convergence at the `h` in `shape`, then `E0`."""
+        k_values = np.zeros(len(labels))
+        previous, cycles_used = None, 0
+        for cycle in range(max(1, config.n_cycles)):
+            cycles_used = cycle + 1
+            e_bond, f_bond = _bond_block(topology, qforce, all_vecs, shape)
 
+            k_values = _solve_linear(
+                a_energy,
+                a_force,
+                b_energy - e_bond,
+                (b_force - f_bond).reshape(-1),
+                labels,
+                config,
+                weight,
+            )
+
+            # everything except the bonds, at the freshly solved force constants
+            target_e, target_f = bond_target(k_values)
+            shape = _refine_bonds(
+                topology, qforce, all_vecs, shape, target_e, target_f, weight, geometric_r0
+            )
+
+            e_bond, f_bond = _bond_block(topology, qforce, all_vecs, shape)
+            residual = float(
+                np.linalg.norm(f_bond - target_f) ** 2
+                + weight**2 * np.linalg.norm(_centered(e_bond - target_e)) ** 2
+            )
+            if previous is not None and previous - residual <= config.cycle_tol * previous:
+                break
+            previous = residual
+
+        # The loop leaves the bonds one refinement ahead of the force constants that
+        # refinement was run against.  Re-solving the linear block against the final
+        # bonds costs one solve and makes the returned pair mutually consistent, so
+        # that what comes back is a point the alternation actually visits rather
+        # than a half-step past one.
+        e_bond, f_bond = _bond_block(topology, qforce, all_vecs, shape)
         k_values = _solve_linear(
             a_energy,
             a_force,
@@ -765,43 +957,42 @@ def fit(
             weight,
         )
 
-        # everything except the bonds, at the freshly solved force constants
-        target_e, target_f = bond_target(k_values)
-        shape = _refine_bonds(
-            topology, qforce, all_vecs, shape, target_e, target_f, weight, geometric_r0
-        )
+        # --- and only now, the offset ------------------------------------------
+        # Nothing above has any opinion about where the energy zero sits, so what is
+        # left over is a constant: the mean error of the converged field against the
+        # reference.  Setting `E0` to it is the least-squares optimum for a constant
+        # by definition, and it is the last thing the fit does.
+        e0 = float(np.mean(b_energy - e_bond - a_energy @ k_values))
+        return shape, k_values, e0, cycles_used
 
-        e_bond, f_bond = _bond_block(topology, qforce, all_vecs, shape)
-        residual = float(
-            np.linalg.norm(f_bond - target_f) ** 2
-            + weight**2 * np.linalg.norm(_centered(e_bond - target_e)) ** 2
-        )
-        if previous is not None and previous - residual <= config.cycle_tol * previous:
-            break
-        previous = residual
+    shape, k_values, e0, cycles_used = converge(shape)
 
-    # The loop leaves the bonds one refinement ahead of the force constants that
-    # refinement was run against.  Re-solving the linear block against the final
-    # bonds costs one solve and makes the returned pair mutually consistent, so
-    # that what comes back is a point the alternation actually visits rather
-    # than a half-step past one.
-    e_bond, f_bond = _bond_block(topology, qforce, all_vecs, shape)
-    k_values = _solve_linear(
-        a_energy,
-        a_force,
-        b_energy - e_bond,
-        (b_force - f_bond).reshape(-1),
-        labels,
-        config,
-        weight,
-    )
-
-    # --- and only now, the offset ------------------------------------------
-    # Nothing above has any opinion about where the energy zero sits, so what is
-    # left over is a constant: the mean error of the converged field against the
-    # reference.  Setting `E0` to it is the least-squares optimum for a constant
-    # by definition, and it is the last thing the fit does.
-    e0 = float(np.mean(b_energy - e_bond - a_energy @ k_values))
+    # --- the asymptotes, against the fragments ------------------------------
+    # The stretched well `Dw` is solved rather than fitted -- one condition per
+    # bond class, from the fragment frames (`_asymptotes` says why `Dw` and not
+    # `h`) -- and it reaches every stretched training frame, so the
+    # alternation is re-run under it until the limit stops moving.
+    targets = _asymptote_targets(training_set, topology, params)
+    asymptotes = {}
+    if targets:
+        at_eq = next(i for i, f in enumerate(frames) if f is equilibrium)
+        for _ in range(ASYMPTOTE_ROUNDS):
+            dw = _asymptotes(
+                targets, topology, qforce, all_vecs[at_eq], shape,
+                valence=float(a_energy[at_eq] @ k_values) + e0,
+            )
+            moved = np.nanmax(np.abs(dw - shape["Dw"])) if "Dw" in shape else np.inf
+            shape = {**shape, "Dw": dw}
+            # Relative, and at the fit's own tolerance: a fixed floor here
+            # would outlast a tightened `cycle_tol` and leave a refit drifting
+            # by it however tightly the alternation converged.
+            if moved <= config.cycle_tol * np.nanmax(np.abs(dw)):
+                break
+            shape, k_values, e0, cycles_used = converge(shape)
+        symbols = equilibrium.get_chemical_symbols()
+        for c, (bond, _, _) in sorted(targets.items()):
+            h = float(shape["Dw"][c] - shape["D"][c])
+            asymptotes[f"{symbols[bond[0]]}-{symbols[bond[1]]} {c}"] = h
 
     params = _assemble(
         params, topology, values, labels, k_values, e0, shape, bond_classes
@@ -810,6 +1001,8 @@ def fit(
     params.report["classes"] = len(labels) + n_bond_classes
     params.report["frames"] = len(frames)
     params.report["cycles"] = cycles_used
+    if asymptotes:
+        params.report["asymptote_h"] = asymptotes
     if seed is not None:
         params.report["seeded"] = seed.n_seeded
     return params
@@ -824,7 +1017,7 @@ def _assemble(params, topology, values, labels, k_values, e0, shape, bond_classe
         kwargs = {name: value.copy() for name, value in values.get(term, {}).items()}
         kwargs.update({n: v.copy() for n, v in topology.fixed.get(term, {}).items()})
         if term == "bond":
-            kwargs = {name: value[bond_classes] for name, value in shape.items()}
+            kwargs = _bond_kwargs(shape, bond_classes)
         else:
             kwargs["k"] = np.array(
                 [by_class[(term, int(c))] for c in topology.classes[term]]

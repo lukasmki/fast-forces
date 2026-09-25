@@ -25,7 +25,15 @@ The full training sets go under `fit_config.workdir` instead, mirroring the
 same paths.  They are what make a rerun cheap: a molecule whose training set is
 already there is refit from it without the reference calculator, and a
 reaction whose stationary points are there skips the saddle search.  Delete the
-file to regenerate it.  A change to the sampling half of `fit_config` --
+file to regenerate it.
+
+A reaction's `<path>.xyz` is also an *input*.  One already at the output path
+-- a published dataset's reactant, TS and product, say -- is taken as the
+reaction's geometry and the saddle search is skipped; the frames are
+relabelled with the reference calculator, since their energies came from
+something else, and the labelled frames become the cache (`_frame_source`).  A
+searched path is written there too, so regenerating one means deleting both
+files.  A change to the sampling half of `fit_config` --
 `n_mode_frames`, `temperature` -- therefore does not reach a molecule until its
 training set is deleted; a change to the fitting half does.
 
@@ -61,7 +69,7 @@ from pathlib import Path
 import numpy as np
 from DynamicTopology.forcefield.params import ForceFieldParams, use
 
-from . import io
+from . import io, sampling
 from . import reaction as reaction_module
 from .fit import FitConfig
 
@@ -249,7 +257,9 @@ class Manifest:
         lines = [f"{self.name}: {self.path}", f"  training sets under {self.workdir}"]
         for entry in self.molecules + self.reactions:
             notes = []
-            if _cached(entry):
+            if entry.kind == "reaction":
+                notes.extend(self._frame_notes(entry))
+            elif _cached(entry):
                 notes.append("training set present")
             if any(entry.output.parent.glob(entry.output.name + ".*")):
                 notes.append("overwrites existing output")
@@ -261,6 +271,22 @@ class Manifest:
                 shown = ", ".join(f"{k} {v}" for k, v in entry.spins.items())
                 lines.append(f"      2S: {shown}")
         return "\n".join(lines)
+
+    def _frame_notes(self, entry: Entry) -> list[str]:
+        reaction = reaction_module.parse(entry.mapped)
+        try:
+            source, path, _ = _frame_source(entry, reaction)
+        except ManifestError as error:  # `run` reports it against the entry
+            return [str(error)]
+        if source == "cache":
+            return ["training set present"]
+        if source == "frames":
+            return [f"stationary points from {_relative(path, self.root)}"]
+        if source == "output":
+            return ["stationary points from its .xyz, relabelled"]
+        if reaction.channel()[0] == "fission":
+            return ["reactant relaxed"]
+        return ["saddle search"]
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -501,6 +527,8 @@ def fit_molecule(manifest: Manifest, entry: Entry, calc_factory, method: str):
                     f"2S={cached}, not the {atoms.info['spin']} asked for; delete "
                     "it to regenerate"
                 )
+            # A set from before the asymptote was fitted has no fragments.
+            ff.add_fragment_frames(str(training), calc_factory)
             params = ff.fit_from_file(str(training), config=manifest.config)
         else:
             training.parent.mkdir(parents=True, exist_ok=True)
@@ -517,17 +545,205 @@ def fit_molecule(manifest: Manifest, entry: Entry, calc_factory, method: str):
     return [jsonl, xyz], (equilibrium, params)
 
 
-def _supplied_frames(entry: Entry, reaction):
-    """Stationary points given in the manifest or left by an earlier run."""
-    from ase.io import read
+def _read_frames(path: Path) -> list:
+    return io.read_frames(path)
 
-    path = entry.options.get("frames") or _file(entry.training, ".xyz")
-    if not Path(path).exists():
-        if "frames" in entry.options:
+
+def _same_geometry(first: list, second: list) -> bool:
+    """Whether two frame lists are one path: same atoms, positions to file precision."""
+    return len(first) == len(second) and all(
+        np.array_equal(a.get_atomic_numbers(), b.get_atomic_numbers())
+        and np.allclose(a.get_positions(), b.get_positions(), rtol=0.0, atol=1e-6)
+        for a, b in zip(first, second)
+    )
+
+
+def _pairs(connectivity) -> frozenset:
+    """An extxyz `connectivity` list as the bond set `Reaction.bonds` compares to."""
+    return frozenset(frozenset((int(i), int(j))) for i, j, *_ in connectivity)
+
+
+def _in_reaction_order(entry: Entry, reaction, frames: list, path: Path) -> list:
+    """`frames` renumbered onto the reaction's atoms, matched by bonds, not index.
+
+    An output geometry is usually someone else's file -- a DynamicTopology
+    dataset, which matches templates by graph isomorphism and so never cared
+    what order its atoms are in -- so its numbering is rarely the one the
+    mapped SMILES gives, and the states and the coupling are written in that
+    one.  The atoms are matched on element and on the bonds of both ends
+    together: an atom's reactant bonds alone would not say which of two
+    hydrogens on one oxygen is the one that leaves.  Any match is as good as
+    any other, since two only differ by a symmetry of the reaction, but the file's
+    own numbering is kept whenever it is one, so that a file this run wrote
+    reads back unchanged and still matches its cache.
+
+    Frames stating no connectivity are left alone, and `_check_frames` holds
+    them to the reaction's index order as it stands.
+    """
+    import networkx as nx
+    from networkx.algorithms.isomorphism import GraphMatcher
+
+    ends = [(frames[0], "reactant")]
+    if len(frames) > 1:
+        ends.append((frames[-1], "product"))
+    if any("connectivity" not in f.info for f, _ in ends):
+        return frames
+    found = {side: _pairs(f.info["connectivity"]) for f, side in ends}
+    numbers = frames[0].get_atomic_numbers()
+    if np.array_equal(numbers, reaction.numbers) and all(
+        bonds == reaction.bonds(side) for side, bonds in found.items()
+    ):
+        return frames
+
+    def graph(numbers, bonds_by_side) -> nx.Graph:
+        g = nx.Graph()
+        g.add_nodes_from((i, {"Z": int(z)}) for i, z in enumerate(numbers))
+        for side, bonds in bonds_by_side.items():
+            for i, j in map(tuple, bonds):
+                sides = g.edges[i, j]["sides"] if g.has_edge(i, j) else frozenset()
+                g.add_edge(i, j, sides=sides | {side})
+        return g
+
+    matcher = GraphMatcher(
+        graph(numbers, found),
+        graph(reaction.numbers, {side: reaction.bonds(side) for side in found}),
+        node_match=lambda a, b: a["Z"] == b["Z"],
+        edge_match=lambda a, b: a["sides"] == b["sides"],
+    )
+    mapping = next(matcher.isomorphisms_iter(), None)  # file index -> reaction index
+    if mapping is None:
+        raise ManifestError(
+            f"{entry.label}: {path} is not this reaction -- no numbering of its "
+            f"atoms gives the reactant and product bonds of {entry.mapped}"
+        )
+    order = sorted(mapping, key=mapping.get)  # reaction index -> file index
+    reordered = []
+    for frame in frames:
+        new = frame[order]
+        new.info = dict(frame.info)
+        if "connectivity" in frame.info:
+            new.info["connectivity"] = [
+                [mapping[int(i)], mapping[int(j)], *rest]
+                for i, j, *rest in frame.info["connectivity"]
+            ]
+        reordered.append(new)
+    return reordered
+
+
+def _frame_source(entry: Entry, reaction):
+    """`(source, path, frames)`: where a reaction's stationary points come from.
+
+    In order: `"frames"`, a file the manifest names, taken as it stands;
+    `"output"`, a `<path>.xyz` already at the entry's output path, whose
+    *geometries* are taken -- renumbered into the reaction's order
+    (`_in_reaction_order`) -- and relabelled with the reference calculator;
+    `"cache"`, the training set an earlier run left in the workdir; and `None`,
+    nothing, so the saddle is searched for.
+
+    The output file outranks the cache because it is the one a person puts
+    there -- the geometries of a published dataset, a constrained path -- and
+    the cache is only ever this run's own.  A cache is still used when it holds
+    the output's geometries, since it is then those same frames already
+    labelled: every run leaves the two in that state, so only the first run
+    after the output file changes pays for the relabelling.
+    """
+    if "frames" in entry.options:
+        path = Path(entry.options["frames"])
+        if not path.exists():
             raise ManifestError(f"{entry.label}: frames file {path} does not exist")
-        return None
+        return "frames", path, _read_frames(path)
+    output, cache = _file(entry.output, ".xyz"), _file(entry.training, ".xyz")
+    if output.exists():
+        frames = _in_reaction_order(entry, reaction, _read_frames(output), output)
+        if cache.exists():
+            cached = _read_frames(cache)
+            if _same_geometry(frames, cached):
+                return "cache", cache, cached
+        return "output", output, frames
+    if cache.exists():
+        return "cache", cache, _read_frames(cache)
+    return None, None, None
 
-    frames = read(str(path), index=":", format="extxyz")
+
+_SOURCES = {
+    "frames": "a file the manifest names",
+    "output": "the reaction's output file",
+    "cache": "a cached training set; delete it to regenerate",
+}
+
+
+def _frame_kinds(n: int) -> list[str]:
+    """The `FRAME_KINDS` entry of each of `n` frames: reactant first, product last.
+
+    Three frames are exactly `FRAME_KINDS`.  A fission may carry a single
+    reactant, or a longer scan, whose inner frames are taken as the path's
+    middle.
+    """
+    if n == 1:
+        return ["reactant"]
+    return ["reactant"] + ["transition"] * (n - 2) + ["product"]
+
+
+def _supplied_frames(entry: Entry, reaction, calc_factory=None):
+    """`(frames, source)`: the stationary points this entry already has.
+
+    `source` is `_frame_source`'s, and `(None, None)` means there are none.
+    Frames from the output file are relabelled with `calc_factory`, and without
+    one only checked: their energies are whatever produced them, which is
+    rarely this manifest's calculator, and `parameterize` needs the barrier on
+    the same zero as the fragment fits.
+    """
+    source, path, frames = _frame_source(entry, reaction)
+    if source is None:
+        return None, None
+    _check_frames(entry, reaction, frames, path, source)
+    if source == "output" and calc_factory is not None:
+        frames = _relabel(entry, reaction, frames, calc_factory)
+    return frames, source
+
+
+def _relabel(entry: Entry, reaction, frames: list, calc_factory) -> list:
+    """`frames`' geometries, labelled afresh at the entry's charge and spins.
+
+    Only the numbers, positions and cell survive: whatever else the file
+    carried -- its energies, a stated method, a perceived connectivity -- came
+    from somewhere else.  Each frame is stamped with the reaction's own graph,
+    as `stationary_points` stamps a searched path, the middle ones with the
+    reactant's.
+
+    A fission's coupling is fitted from its reactant alone (`coupling.fit`);
+    the rest of its path is there for DynamicTopology, which reads the
+    product's topology off the last frame, and for the report.  Two fragments
+    several angstroms apart are where an SCF is least likely to converge -- the
+    4 A frame of O2 -> 2 O does not under B3LYP -- so a fission frame past the
+    reactant that fails keeps its geometry unlabelled rather than costing the
+    channel.
+    """
+    from ase import Atoms
+
+    fission = reaction.channel()[0] == "fission"
+    labelled = []
+    for frame, kind in zip(frames, _frame_kinds(len(frames))):
+        atoms = Atoms(
+            numbers=frame.get_atomic_numbers(),
+            positions=frame.get_positions(),
+            cell=frame.get_cell(),
+            pbc=frame.get_pbc(),
+        )
+        atoms.set_initial_charges(reaction.charges)
+        atoms.info["spin"] = entry.spins[kind]
+        strict = not fission or kind == "reactant"
+        atoms = sampling.label(atoms, calc_factory, kind, strict=strict) or atoms
+        atoms = reaction_module._tag(
+            atoms, reaction, "product" if kind == "product" else "reactant"
+        )
+        atoms.info["frame_kind"] = kind
+        labelled.append(atoms)
+    return labelled
+
+
+def _check_frames(entry: Entry, reaction, frames: list, path: Path, source: str):
+    """Refuse frames that are not this reaction's path at this entry's spins."""
     kind, _ = reaction.channel()
     if (kind == "fission" and not frames) or (kind != "fission" and len(frames) != 3):
         needs = "the reactant" if kind == "fission" else "reactant, TS and product"
@@ -536,12 +752,9 @@ def _supplied_frames(entry: Entry, reaction):
             f"needs {needs}"
         )
 
-    def pairs(connectivity) -> set:
-        return {frozenset((int(i), int(j))) for i, j, *_ in connectivity}
-
     checks = [(frames[0], "reactant")]
-    if len(frames) == 3:
-        checks.append((frames[2], "product"))
+    if len(frames) > 1:
+        checks.append((frames[-1], "product"))
     for frame, side in checks:
         if not np.array_equal(frame.get_atomic_numbers(), reaction.numbers):
             raise ManifestError(
@@ -549,36 +762,37 @@ def _supplied_frames(entry: Entry, reaction):
                 "order -- write the reaction atom-mapped to match the file"
             )
         stored = frame.info.get("connectivity")
-        if stored is not None and pairs(stored) != reaction.bonds(side):
+        if stored is not None and _pairs(stored) != reaction.bonds(side):
             raise ManifestError(
                 f"{entry.label}: the {side} frame in {path} is bonded differently "
                 f"from the mapped reaction {entry.mapped} -- write the reaction "
                 "atom-mapped to match the file"
             )
-        if frame.calc is None or "energy" not in frame.calc.results:
+        # Output geometries are relabelled, so what they carry does not matter,
+        # and a fission is fitted from its reactant alone (see `_relabel`).
+        needed = source != "output" and not (kind == "fission" and side == "product")
+        if needed and (frame.calc is None or "energy" not in frame.calc.results):
             raise ManifestError(f"{entry.label}: {path} carries no reference energies")
     # A frame computed at one spin is not reused for another.  One without a
-    # stated spin was computed at whatever the calculator fell back to.
-    for frame, kind in zip(frames, reaction_module.FRAME_KINDS):
+    # stated spin was computed at whatever the calculator fell back to -- unless
+    # it is an output geometry, which is relabelled at the spin asked for, and
+    # is refused only for stating a different one: it is a stationary point of
+    # that surface, not of this one.
+    for frame, kind in zip(frames, _frame_kinds(len(frames))):
+        if source == "output" and "spin" not in frame.info:
+            continue
         found, wanted = _unpaired(frame), entry.spins[kind]
         if found != wanted:
-            if "frames" in entry.options:
-                source = "a file the manifest names"
-            else:
-                source = "a cached training set; delete it to regenerate"
             raise ManifestError(
                 f"{entry.label}: the {kind} frame in {path} is at 2S={found}, not "
-                f"the {wanted} asked for ({source})"
+                f"the {wanted} asked for ({_SOURCES[source]})"
             )
-    return frames
 
 
 def fit_reaction(manifest: Manifest, entry: Entry, calc_factory, fitted: dict):
     """Fit one reaction entry; the written paths."""
-    from ase.io import write
-
     reaction = reaction_module.parse(entry.mapped)
-    frames = _supplied_frames(entry, reaction)
+    frames, source = _supplied_frames(entry, reaction, calc_factory)
     rxn = reaction_module.parameterize(
         entry.mapped,
         calc_factory,
@@ -591,10 +805,12 @@ def fit_reaction(manifest: Manifest, entry: Entry, calc_factory, fitted: dict):
         frames=frames,
         spins=entry.spins,
     )
-    if frames is None:
+    # A searched path, or output geometries just labelled, is what the next
+    # run should find in the cache.
+    if source in (None, "output"):
         cache = _file(entry.training, ".xyz")
         cache.parent.mkdir(parents=True, exist_ok=True)
-        write(str(cache), rxn.frames, format="extxyz")
+        io.write_frames(cache, rxn.frames)
 
     rxn.write(str(entry.output))
     written = [

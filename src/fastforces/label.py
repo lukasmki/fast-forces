@@ -20,15 +20,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated
 
 import typer
-from ase import Atoms, io, units
+from ase import Atoms, units
 from ase.calculators.singlepoint import SinglePointCalculator
 
 from pyscf import dft, gto, lib
 
 from .calculators.pyscf import ase_to_pyscf
+from .io import read_frames, write_frames
 
 XC = "wb97x_v"
 
@@ -197,7 +198,7 @@ def main(
     if atom_cache_path is not None and atom_cache_path.exists():
         atom_cache = json.loads(atom_cache_path.read_text())
 
-    atoms: list[Atoms] = cast(list[Atoms], io.read(input, index=":"))
+    atoms: list[Atoms] = read_frames(input)
 
     # Write incrementally so a crash halfway through does not lose everything.
     output.unlink(missing_ok=True)
@@ -233,7 +234,7 @@ def main(
             flush=True,
         )
 
-        io.write(output, at, format="extxyz", append=i > 0)
+        write_frames(output, [at], append=i > 0)
 
         if atom_cache_path is not None:
             atom_cache_path.write_text(json.dumps(atom_cache, indent=2))

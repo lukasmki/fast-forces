@@ -1344,7 +1344,10 @@ class ReactionParameters:
         for frame in self.frames:
             work = frame.copy()
             work.calc = calc
-            out["reference"].append(float(frame.get_potential_energy()))
+            # nan for a fission frame the reference could not label (see
+            # `manifest._relabel`); the fit never reads one.
+            reference = frame.get_potential_energy() if frame.calc is not None else np.nan
+            out["reference"].append(float(reference))
             out["evb"].append(float(work.get_potential_energy()))
             # The Hamiltonian's diagonal is each state's own energy, unmixed.
             out["diabatic"].append(tuple(map(float, np.diag(calc.results["hamiltonian"]))))
@@ -1383,11 +1386,11 @@ class ReactionParameters:
         """
         from pathlib import Path
 
-        from ase.io import write as ase_write
+        from .io import write_frames
 
         stem_path = Path(stem)
         stem_path.parent.mkdir(parents=True, exist_ok=True)
-        ase_write(str(stem_path.with_suffix(".xyz")), self.frames, format="extxyz")
+        write_frames(stem_path.with_suffix(".xyz"), self.frames)
         self.coupling.to_jsonl(str(stem_path.with_suffix(".jsonl")))
         for side, params in self.states.items():
             params.to_jsonl(str(stem_path.parent / f"{stem_path.name}-{side}.jsonl"))

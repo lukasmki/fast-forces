@@ -72,6 +72,23 @@ result, changes to the *sampling* settings (``n_mode_frames``,
 ``temperature``) only take effect once the training set is deleted, while
 changes to the *fitting* settings take effect immediately.
 
+A reaction's ``<path>.xyz`` is also an input. If one is already there, for
+example a published dataset's stationary points, its reactant, TS and product
+are used as the reaction's geometry and the saddle search is skipped. Only the
+geometries are used:
+
+- The atoms are renumbered onto the mapped SMILES by matching elements and the
+  bonds of both ends. A file in another atom order is accepted, and a file of
+  a different reaction is refused.
+- Each frame is relabelled with the reference calculator at the entry's spin,
+  so the barrier is on the same zero as the fragment fits.
+
+The labelled frames are cached like a searched path, and later runs reuse the
+cache while it holds the same geometries. Because a searched path is written
+to ``<path>.xyz`` too, regenerating one means deleting both files. An explicit
+``frames`` file outranks the output file, and the output file outranks the
+cache. ``--dry-run`` shows which source each reaction will use.
+
 Molecules are fitted before reactions. A reaction takes its fragments from the
 molecule fits wherever the manifest lists that molecule, so a water molecule
 shared by three proton transfers is fitted once. Any fragment the manifest does
@@ -128,7 +145,9 @@ Entries
 
 ``frames``
    An extxyz of reactant, TS and product that skips the saddle search. A
-   barrierless gas-phase channel needs this.
+   barrierless gas-phase channel needs this. Unlike an output ``<path>.xyz``,
+   it is taken as it stands: it has to be in the reaction's atom order and
+   carry energies from the manifest's reference method.
 
 ``amplitude``
    Fix the coupling amplitude (eV) instead of fitting it.
