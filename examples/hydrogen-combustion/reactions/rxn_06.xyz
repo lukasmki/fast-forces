@@ -1,0 +1,12 @@
+2
+Properties=species:S:1:pos:R:3:initial_charges:R:1:bond-order:R:2:mulliken:R:1:forces:R:3 spin=2 connectivity="_JSON [[0, 1, 1.0]]" frame_kind=reactant energy=-4090.309412779172 pbc="F F F"
+O        0.00000000       0.00000000       0.00000000       0.00000000      14.13259635       1.86740365      -0.00000000      -0.00000000       0.00000000      -1.55261506
+O        0.00000000       0.00000000       1.19614093       0.00000000       1.86740365      14.13259635       0.00000000       0.00000000      -0.00000000       1.55261506
+2
+Properties=species:S:1:pos:R:3:initial_charges:R:1:bond-order:R:2:mulliken:R:1:forces:R:3 spin=2 connectivity="_JSON [[0, 1, 1.0]]" frame_kind=transition energy=-4085.800972554374 pbc="F F F"
+O        0.00000000       0.00000000       0.00000000       0.00000000      14.01218057       1.98781949      -0.00000003      -0.00000000       0.00000000       8.40063446
+O        0.00000000       0.00000000       1.80000000       0.00000000       1.98781949      14.01218045       0.00000003       0.00000000      -0.00000000      -8.40063446
+2
+Properties=species:S:1:pos:R:3:initial_charges:R:1 spin=2 frame_kind=product connectivity="_JSON []" pbc="F F F"
+O        0.00000000       0.00000000       0.00000000       0.00000000
+O        0.00000000       0.00000000       4.00000000       0.00000000

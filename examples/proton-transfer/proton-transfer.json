@@ -1,6 +1,6 @@
 {
     "name" : "Water-fixed-pc",
-    "description": "Bulk water proton transfer with fixed per-template point charges: the Zundel and hydroxide hops plus autoionization, computed at wb97x-v/aug-cc-pvtz",
+    "description": "Bulk water proton transfer with fixed per-template point charges: the Zundel and hydroxide hops plus autoionization, fitted at B3LYP/6-31+G* in the gas phase on the O-O-constrained geometries of DynamicTopology's Water-fixed-pc set",
     "version" : "1.0.0",
     "author": "Lukas Kim",
     "molecules": [
@@ -25,5 +25,17 @@
         "exclude_coulomb": true,
         "gamma": 2.0,
         "electrostatics": "pointcharge"
+    },
+    "fit_config": {
+        "calculator": {
+            "name": "pyscf",
+            "xc": "B3LYP",
+            "basis": "6-31+g*"
+        },
+        "workdir": "training",
+        "electrostatics": "fixed",
+        "n_mode_frames": 40,
+        "n_conformers": 0,
+        "temperature": 500.0
     }
 }

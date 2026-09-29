@@ -1,0 +1,5 @@
+3
+Properties=species:S:1:pos:R:3:bond-order:R:3:mulliken:R:1:forces:R:3 smiles="[O]O" connectivity="_JSON [[0, 1, 1.0], [1, 2, 1.0]]" spin=1 method=B3LYP/6-31g* frame_kind=equilibrium charge=0 fit_config="{\"temperature\": 500.0, \"n_mode_frames\": 40, \"n_conformers\": 20, \"torsion_step_deg\": 15.0, \"hessian_delta\": 0.01, \"fmax\": 0.001, \"energy_weight\": null, \"regularization\": 0.001, \"seed\": 0, \"bond_form\": \"morse\", \"electrostatics\": \"fixed\", \"n_cycles\": 200, \"cycle_tol\": 0.0001}" energy=-4106.084898370347 pbc="F F F"
+O        1.00739022      -0.17762225      -0.00000000      14.97125699       1.32818278       0.01242568      -0.15593272       0.00035573      -0.00032606       0.00000000
+O       -0.16830189       0.44849625       0.00000000       1.32818278      14.48341824       0.75448972      -0.28304537       0.00017684       0.00005196       0.00000000
+H       -0.83902234      -0.27088961       0.00000000       0.01242568       0.75448972       0.35512841       0.43897810      -0.00021739       0.00025872       0.00000000
