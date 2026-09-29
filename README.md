@@ -1,7 +1,6 @@
 # fast-forces
 
-Fast automatic parameterization of force fields -- for
-[DynamicTopology](../DynamicTopo).
+Fast automatic parameterization of force fields.
 
 **The two packages split one job.** DynamicTopology is the inference package:
 the force field itself (bonded terms, ACKS2 or fixed point charges, tapered ZBL,

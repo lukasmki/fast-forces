@@ -24,7 +24,7 @@ from fastforces.evb import EVB, diabatic_energies, diabatic_forces
 from fastforces.params import Parameters, terms_to_blocks
 
 NUMBERS = [8, 1, 8]
-WATER = Path(__file__).resolve().parents[2] / "DynamicTopo" / "datasets" / "Water"
+WATER = Path(__file__).resolve().parents[2] / "DynamicTopology" / "datasets" / "Water"
 
 
 def _state(bond, e0=-1.5, charges=None):
@@ -262,7 +262,7 @@ def test_the_states_must_share_their_electrostatics(geometry, states, charged_st
         )
 
 
-@pytest.mark.skipif(not WATER.exists(), reason="needs the DynamicTopo checkout")
+@pytest.mark.skipif(not WATER.exists(), reason="needs the DynamicTopology checkout")
 @pytest.mark.parametrize(
     "reaction", ["h3o-h2o-transfer", "h2o-oh-transfer", "h2o-autoionization"]
 )
@@ -279,11 +279,15 @@ def test_the_surface_is_dynamictopology_s(reaction):
     from DynamicTopology.system import System
 
     manifest = WATER / "Water.json"
-    params = ForceFieldParams.from_dict(json.loads(manifest.read_text())["global_params"])
+    params = ForceFieldParams.from_dict(
+        json.loads(manifest.read_text())["global_params"]
+    )
     frames = io.read(WATER / "reactions" / f"{reaction}.xyz", index=":")
     ts = frames[len(frames) // 2].copy()
     ts.calc = None
-    rows = [json.loads(line) for line in open(WATER / "reactions" / f"{reaction}.jsonl")]
+    rows = [
+        json.loads(line) for line in open(WATER / "reactions" / f"{reaction}.jsonl")
+    ]
 
     with use(params):
         reaction_set = ReactionSet(manifest)

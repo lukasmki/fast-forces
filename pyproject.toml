@@ -45,4 +45,4 @@ dev = [
 markers = ["slow: end-to-end fits that call a reference calculator"]
 
 [tool.uv.sources]
-dynamictopology = { path = "../DynamicTopo", editable = true }
+dynamictopology = { path = "../DynamicTopology", editable = true }

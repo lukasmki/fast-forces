@@ -73,7 +73,7 @@ from fastforces.refine import (
 
 RSET_PATH = (
     Path(__file__).resolve().parents[2]
-    / "DynamicTopo"
+    / "DynamicTopology"
     / "datasets"
     / "HCombustion"
     / "HCombustion.json"
@@ -81,7 +81,9 @@ RSET_PATH = (
 
 pytestmark = [
     pytest.mark.slow,
-    pytest.mark.skipif(not RSET_PATH.exists(), reason="needs the DynamicTopo checkout"),
+    pytest.mark.skipif(
+        not RSET_PATH.exists(), reason="needs the DynamicTopology checkout"
+    ),
 ]
 
 

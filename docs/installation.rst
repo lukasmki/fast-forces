@@ -3,13 +3,13 @@ Installation
 
 fast-forces needs Python 3.13 or newer and is managed with
 `uv <https://docs.astral.sh/uv/>`_. It depends on DynamicTopology as an
-editable path dependency (``../DynamicTopo``), so check the two repositories out
+editable path dependency (``../DynamicTopology``), so check the two repositories out
 side by side:
 
 .. code-block:: text
 
    Projects/
-   ├── DynamicTopo/     # the force field and reactive MD
+   ├── DynamicTopology/     # the force field and reactive MD
    └── fast-forces/     # this package
 
 Then, from ``fast-forces/``:

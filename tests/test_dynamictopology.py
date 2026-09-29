@@ -18,7 +18,7 @@ import pytest
 from fastforces.calculator import FastForces
 from fastforces.params import Parameters, terms_to_blocks
 
-DATASETS = Path(__file__).resolve().parents[2] / "DynamicTopo" / "datasets"
+DATASETS = Path(__file__).resolve().parents[2] / "DynamicTopology" / "datasets"
 MANIFESTS = [
     DATASETS / "HCombustion" / "HCombustion.json",
     DATASETS / "Water" / "Water.json",
@@ -26,7 +26,7 @@ MANIFESTS = [
 ]
 
 pytestmark = pytest.mark.skipif(
-    not DATASETS.exists(), reason="needs the DynamicTopo checkout"
+    not DATASETS.exists(), reason="needs the DynamicTopology checkout"
 )
 
 

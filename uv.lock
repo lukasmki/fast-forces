@@ -355,7 +355,7 @@ wheels = [
 [[package]]
 name = "dynamictopology"
 version = "0.1.0"
-source = { editable = "../DynamicTopo" }
+source = { editable = "../DynamicTopology" }
 dependencies = [
     { name = "ase" },
     { name = "molify" },
@@ -416,7 +416,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "ase", specifier = ">=3.29.0" },
-    { name = "dynamictopology", editable = "../DynamicTopo" },
+    { name = "dynamictopology", editable = "../DynamicTopology" },
     { name = "molify", specifier = ">=0.2.6" },
     { name = "networkx", specifier = ">=3.6" },
     { name = "numpy", specifier = ">=2.0" },

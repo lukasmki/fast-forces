@@ -98,11 +98,13 @@ def test_a_manifest_molecule_has_the_key_a_reaction_gives_it():
 # ---------------------------------------------------------------------------
 
 
-WATER_MANIFEST = HERE.parents[1] / "DynamicTopo" / "datasets" / "Water" / "Water.json"
+WATER_MANIFEST = (
+    HERE.parents[1] / "DynamicTopology" / "datasets" / "Water" / "Water.json"
+)
 
 
 @pytest.mark.skipif(
-    not WATER_MANIFEST.exists(), reason="needs the DynamicTopo checkout"
+    not WATER_MANIFEST.exists(), reason="needs the DynamicTopology checkout"
 )
 def test_the_water_dataset_manifest_loads():
     """DynamicTopology's own dataset manifest is a fast-forces manifest too."""
@@ -226,8 +228,10 @@ def test_contradictory_electrostatics_are_refused(tmp_path):
         ({"molecules": [{"smiles": "O", "path": "a", "spin": -2}]}, "non-negative"),
         ({"reactions": [{"smiles": OXYGEN, "path": "a", "spin": 2}]}, "parity"),
         ({"reactions": [{"smiles": OXYGEN, "path": "a", "spin_ts": 1.0}]}, "integer"),
-        ({"reactions": [{"smiles": "OO>>[OH].[OH]", "path": "a", "spin_ts": 2}]},
-         "fission"),
+        (
+            {"reactions": [{"smiles": "OO>>[OH].[OH]", "path": "a", "spin_ts": 2}]},
+            "fission",
+        ),
     ],
 )
 def test_a_malformed_manifest_is_refused_before_anything_runs(
@@ -345,7 +349,9 @@ def test_output_geometries_are_relabelled_with_the_reference(tmp_path):
         np.testing.assert_allclose(frame.positions, old.positions)
         work = frame.copy()
         work.calc = calc()
-        assert frame.get_potential_energy() == pytest.approx(work.get_potential_energy())
+        assert frame.get_potential_energy() == pytest.approx(
+            work.get_potential_energy()
+        )
         assert frame.get_potential_energy() != pytest.approx(old.get_potential_energy())
         assert frame.info["frame_kind"] == kind
         # the calculator reads the total charge off the atoms, and the file's
@@ -370,7 +376,9 @@ def test_an_output_file_in_another_atom_order_is_renumbered(tmp_path):
     """Numbered as a dataset might number it: the water first, then the
     hydronium, each oxygen before its hydrogens."""
     original = _read(HERE / "h3o-h2o-transfer.xyz")
-    entry, reaction = _output_entry(tmp_path, _permuted(original, [4, 5, 6, 0, 1, 2, 3]))
+    entry, reaction = _output_entry(
+        tmp_path, _permuted(original, [4, 5, 6, 0, 1, 2, 3])
+    )
     frames, source = M._supplied_frames(entry, reaction, _Counting())
     assert source == "output"
     assert frames[0].info["connectivity"] == reaction.connectivity("reactant")
@@ -452,7 +460,9 @@ def test_a_fission_frame_the_reference_cannot_label_is_kept(tmp_path):
         frame.info["connectivity"] = bonds
         path.append(frame)
     ase_write(str(tmp_path / "r.xyz"), path, format="extxyz")
-    manifest = write(tmp_path, reactions=[{"smiles": "[O:1][H:2]>>[O:1].[H:2]", "path": "r"}])
+    manifest = write(
+        tmp_path, reactions=[{"smiles": "[O:1][H:2]>>[O:1].[H:2]", "path": "r"}]
+    )
     entry = M.load(manifest).reactions[0]
     reaction = R.parse(entry.mapped)
 
@@ -523,9 +533,10 @@ def test_a_fission_takes_its_reactant_spin(tmp_path):
 
 
 def test_the_plan_shows_the_spins(tmp_path):
-    assert "2S: reactant 1, transition 1, product 3" in _spins(
-        tmp_path, spin=1, spin_p=3
-    ).plan()
+    assert (
+        "2S: reactant 1, transition 1, product 3"
+        in _spins(tmp_path, spin=1, spin_p=3).plan()
+    )
 
 
 # ---------------------------------------------------------------------------
