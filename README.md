@@ -13,7 +13,7 @@ loads. fast-forces carries no force field of its own -- every energy it fits
 against is `DynamicTopology.forcefield.evaluate`, the single-topology sum
 DynamicTopology's `System` puts on a diabat, so a template is scored during the
 fit exactly as the simulation will score it. The equations are in
-DynamicTopology's `src/DynamicTopology/forcefield/REFERENCE.md`.
+DynamicTopology's documentation, `docs/reference.rst`.
 
 ## Features
 
@@ -161,7 +161,7 @@ single points added on the next run, and every other frame in it is kept.
 `global_params` is
 DynamicTopology's own block (`forcefield.params.ForceFieldParams`) and it is
 *applied*: the whole manifest is fitted under it, so the dataset is fitted at
-exactly the constants it states (REFERENCE.md §7.2). Its `electrostatics` and
+exactly the constants it states. Its `electrostatics` and
 `fit_config.electrostatics` name the same choice; either may be given, and both
 have to agree.
 

@@ -50,8 +50,7 @@ fitted anyway, into `<workdir>/fragments`.
 
 **`global_params` is DynamicTopology's, and it is applied.**  A manifest is the
 same file DynamicTopology loads, and its `global_params` are the constants the
-dataset is fitted at -- DynamicTopology's `forcefield/REFERENCE.md` §7.2 is
-explicit that a parameter set is valid only at those values.  `run` fits every
+dataset is fitted at, and a parameter set is valid only at those values.  `run` fits every
 entry under them (`DynamicTopology.forcefield.params.use`), so a dataset is
 fitted on exactly the surface it will be simulated on.  Values it leaves out
 take DynamicTopology's defaults.
