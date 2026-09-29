@@ -539,6 +539,52 @@ def test_the_plan_shows_the_spins(tmp_path):
     )
 
 
+@pytest.mark.parametrize("stated, refused", [("gas", True), ("pcm", False)])
+def test_a_training_set_from_another_method_is_refused(
+    tmp_path, monkeypatch, stated, refused
+):
+    """Switching the calculator block leaves the old training sets in place,
+    and refitting from one would put the molecule on another method's zero.
+    Refused before the training set is touched."""
+    from ase import Atoms
+
+    import fastforces
+    from fastforces import io
+
+    class Reused(Exception):
+        pass
+
+    def reused(*_):
+        raise Reused
+
+    # The first thing a training set that passes the checks goes through.
+    monkeypatch.setattr(fastforces, "add_fragment_frames", reused)
+
+    spec = {"name": "pyscf", "xc": "PBE", "basis": "6-31g", "pcm": "IEF-PCM"}
+    manifest = M.load(
+        write(
+            tmp_path,
+            molecules=[{"smiles": "O", "path": "h2o"}],
+            fit_config={"calculator": spec},
+        )
+    )
+    _, method = M.calculator_factory(spec)
+    labels = {"gas": "PBE/6-31g", "pcm": method}
+    entry = manifest.molecules[0]
+    training = tmp_path / "training" / "h2o.xyz"
+    training.parent.mkdir()
+    water = Atoms("OH2", positions=[[0, 0, 0], [0.96, 0, 0], [-0.24, 0.93, 0]])
+    meta = {"method": labels[stated], "spin": 0}
+    io.write_training_set(str(training), [water], meta=meta)
+
+    if refused:
+        with pytest.raises(M.ManifestError, match="computed with PBE/6-31g, not"):
+            M.fit_molecule(manifest, entry, None, method)
+    else:
+        with pytest.raises(Reused):
+            M.fit_molecule(manifest, entry, None, method)
+
+
 # ---------------------------------------------------------------------------
 # end to end
 # ---------------------------------------------------------------------------

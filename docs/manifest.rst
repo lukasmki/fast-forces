@@ -70,7 +70,9 @@ without calling the reference calculator, and a reaction whose stationary
 points exist skips the saddle search. Delete a file to regenerate it. As a
 result, changes to the *sampling* settings (``n_mode_frames``,
 ``temperature``) only take effect once the training set is deleted, while
-changes to the *fitting* settings take effect immediately.
+changes to the *fitting* settings take effect immediately. A molecule training
+set computed with a different ``calculator`` is refused rather than refit, since
+its energies are on another method's zero.
 
 A reaction's ``<path>.xyz`` is also an input. If one is already there, for
 example a published dataset's stationary points, its reactant, TS and product
@@ -117,7 +119,9 @@ backend's constructor:
    charges.
 
 ``{"name": "pyscf", "xc": "...", "basis": "...", "pcm": "IEF-PCM", "pcm_eps": 78.36}``
-   PySCF DFT (ωB97X-V/cc-pVTZ by default). ``pcm`` adds implicit solvent.
+   PySCF DFT (ωB97X-V/cc-pVTZ by default). ``pcm`` adds implicit solvent,
+   which is the wrong reference for a dataset meant to run in explicit solvent;
+   see the ``PySCFCalculator`` docstring.
 
 Charge and spin come from each geometry, so one manifest can fit cations,
 anions and radicals against the same method.

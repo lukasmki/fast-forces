@@ -35,7 +35,10 @@ something else, and the labelled frames become the cache (`_frame_source`).  A
 searched path is written there too, so regenerating one means deleting both
 files.  A change to the sampling half of `fit_config` --
 `n_mode_frames`, `temperature` -- therefore does not reach a molecule until its
-training set is deleted; a change to the fitting half does.
+training set is deleted; a change to the fitting half does.  A change to the
+`calculator` block is refused instead: a molecule's training set states its
+method, and refitting from another one's would put the molecule on a different
+zero from the reactions (`fit_molecule`).
 
 Spin is `2S` and fitting-only; DynamicTopology ignores it.  A molecule entry's
 `spin` defaults to its SMILES radicals.  A reaction entry's `spin` sets every
@@ -519,12 +522,23 @@ def fit_molecule(manifest: Manifest, entry: Entry, calc_factory, method: str):
         }
     else:
         if training.exists():
-            cached = io.read_training_set(str(training)).meta.get("spin")
+            stored = io.read_training_set(str(training)).meta
+            cached = stored.get("spin")
             if cached is not None and int(cached) != atoms.info["spin"]:
                 raise ManifestError(
                     f"{entry.label}: the training set {training} was computed at "
                     f"2S={cached}, not the {atoms.info['spin']} asked for; delete "
                     "it to regenerate"
+                )
+            # Reused, it would put this molecule's `E0` on another method's
+            # zero while the reactions are labelled with this one -- and
+            # `fit_amplitude` needs the two on one.  `method` is None when the
+            # caller supplied the calculator, which has no label to compare.
+            cached = stored.get("method")
+            if method is not None and cached is not None and cached != method:
+                raise ManifestError(
+                    f"{entry.label}: the training set {training} was computed with "
+                    f"{cached}, not the manifest's {method}; delete it to regenerate"
                 )
             # A set from before the asymptote was fitted has no fragments.
             ff.add_fragment_frames(str(training), calc_factory)

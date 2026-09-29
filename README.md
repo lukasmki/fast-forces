@@ -1,18 +1,6 @@
 # fast-forces
 
-Fast automatic parameterization of force fields.
-
-**The two packages split one job.** DynamicTopology is the inference package:
-the force field itself (bonded terms, ACKS2 or fixed point charges, tapered ZBL,
-switched 12-6, the intramolecular exclusions, the EVB couplings) and the
-reactive MD that runs on it. fast-forces is everything that produces its
-parameters: sampling a reference calculator, fitting each molecule, locating
-reactions and fitting their couplings, and writing a dataset DynamicTopology
-loads. fast-forces carries no force field of its own -- every energy it fits
-against is `DynamicTopology.forcefield.evaluate`, the single-topology sum
-DynamicTopology's `System` puts on a diabat, so a template is scored during the
-fit exactly as the simulation will score it. The equations are in
-DynamicTopology's documentation, `docs/reference.rst`.
+Fast automatic parameterization of the [DynamicTopology](http://github.com/lukasmki/DynamicTopology) force field.
 
 ## Features
 

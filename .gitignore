@@ -11,7 +11,12 @@ wheels/
 
 # Example outputs
 quickstart/output/
-examples/**/**
+
+examples/**/**/*.jsonl
+examples/**/training/
 
 # Sphinx build output
 docs/_build/
+
+# MacOS
+.DS_Store

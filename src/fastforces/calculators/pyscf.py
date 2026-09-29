@@ -184,7 +184,23 @@ class PySCFCalculator(Calculator):
         gas phase, because the asymmetry that localizes the proton in liquid
         water comes from specific solvation of the two oxygens, which a
         uniform dielectric cannot supply.  That channel still needs supplied
-        frames -- a constrained O-O path -- rather than a saddle search.
+        frames -- a constrained O-O path -- rather than a saddle search.  So
+        does the hydroxide-water one: Sella finds a saddle, and both downhill
+        relaxations from it leave the proton shared.
+
+        **It is also the wrong reference for a DynamicTopology dataset that is
+        meant to run in explicit solvent.**  Each fragment's `E0` then carries
+        its continuum solvation, while the force field adds the *unscreened*
+        Coulomb between molecules on top, so a charged pair is stabilized
+        twice.  At B3LYP/6-31+G*, H3O+ . H2O at an O-O of 2.75 A binds by 0.45
+        eV in PCM and 1.30 eV in the gas phase, and the fixed-charge diabat
+        gives 1.44 eV: the gas-phase number, as it should be.  Fitted against
+        PCM the transfer endpoints came out 0.8-1.0 eV low, and the H3O+ . OH-
+        contact pair fell 3.5 eV *below* the water dimer, where the reference
+        puts it 1.7 eV above -- no coupling reproduces that, and MD on it would
+        autoionize.  Against the gas phase, the same manifest fits every
+        channel (`examples/proton-transfer`).  PCM is for an implicit-solvent
+        simulation, whose intermolecular electrostatics are screened too.
     """
 
     implemented_properties = ["energy", "forces", "charges"]
