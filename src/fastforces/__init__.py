@@ -46,6 +46,7 @@ __all__ = [
     "Reaction",
     "ReactionParameters",
     "add_fragment_frames",
+    "add_reference_charges",
     "as_parameters",
     "build",
     "coupling",
@@ -142,6 +143,7 @@ def parameterize(
         "fit_config": config.to_dict(),
     }
     io.write_training_set(training_set, frames, meta=meta)
+    add_reference_charges(training_set, calc_factory, config.electrostatics)
 
     return fit_from_file(training_set, config=config, initial=initial)
 
@@ -166,6 +168,50 @@ def add_fragment_frames(path: str, calc_factory) -> int:
     return len(frames)
 
 
+def add_reference_charges(path: str, calc_factory, source: str) -> bool:
+    """Put the `source` reference charges on a training set's equilibrium frame.
+
+    `source` is a `FitConfig.electrostatics`.  `"neutral"` needs nothing, and a
+    frame that already carries the array is left alone -- `mulliken` is on every
+    frame `PySCFCalculator` or `TBLiteCalculator` labelled, so this costs nothing
+    there.  Otherwise the equilibrium frame is evaluated once more with
+    `calc_factory`: `mulliken` is the array that evaluation writes (or the
+    calculator's `charges`, for one that writes none), `esp` the
+    Merz-Kollman fit to its density (`charges.esp_charges`).  Every other frame
+    is kept as it was.  Returns whether the file was rewritten.
+    """
+    from .charges import esp_charges
+
+    if source == "neutral":
+        return False
+    data = io.read_training_set(path)
+    equilibrium = data.equilibrium
+    if source in equilibrium.arrays:
+        return False
+    if source == "esp":
+        q = esp_charges(equilibrium, calc_factory(equilibrium))
+    elif source == "mulliken":
+        frame = equilibrium.copy()
+        frame.calc = calc_factory(frame)
+        frame.get_potential_energy()
+        if "mulliken" in frame.arrays:
+            q = frame.get_array("mulliken")
+        elif "charges" in frame.calc.implemented_properties:
+            # plain `tblite.ase.TBLite`: the same populations, not on the frame
+            q = frame.calc.get_charges(frame)
+        else:
+            raise ValueError(
+                f"{type(frame.calc).__name__} reports no atomic charges; use "
+                "`calculators.pyscf.PySCFCalculator` or "
+                "`calculators.tblite.TBLiteCalculator`"
+            )
+    else:
+        raise ValueError(f"unknown reference-charge source {source!r}")
+    equilibrium.set_array(source, np.asarray(q, dtype=float), float)
+    io.write_training_set(path, data.frames, meta=data.meta)
+    return True
+
+
 def fit_from_file(
     path: str, config: FitConfig | None = None, initial=None
 ) -> Parameters:
@@ -177,7 +223,7 @@ def fit_from_file(
     data = io.read_training_set(path)
     if config is None:
         stored = data.meta.get("fit_config")
-        config = FitConfig(**stored) if stored else FitConfig()
+        config = FitConfig.from_stored(stored) if stored else FitConfig()
     graph = perceive(data.equilibrium)
     return fit(
         data, enumerate_terms(data.equilibrium, graph), config=config, initial=initial

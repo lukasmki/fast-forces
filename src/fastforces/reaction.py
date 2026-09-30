@@ -5,7 +5,8 @@ fitted, and they are independent of each other:
 
   the states      one force field per side of the arrow, both defined over the
                   *same* atom indices.  A diabatic state is a bonding topology,
-                  so the two differ only in which bonded terms they carry, and
+                  so the two differ in which bonded terms they carry and in the
+                  reference charges that follow a moving charge, and
                   `state_parameters` builds each by fitting every fragment once
                   and scattering the fitted terms onto the combined indices.
 
@@ -1132,10 +1133,10 @@ def fit_fragments(
                 continue
             built = build(fragment.smiles, seed=seed)
             if len(built) < 2:
-                electrostatics = (config.electrostatics if config else "acks2")
+                source = config.electrostatics if config else "neutral"
                 out[fragment.key] = (
                     built,
-                    _lone_atom(built, calc_factory, electrostatics=electrostatics),
+                    _lone_atom(built, calc_factory, charges=source),
                 )
                 continue
             training = Path(workdir) / f"{_stem(fragment)}.xyz"
@@ -1151,7 +1152,7 @@ def _lone_atom(
     atoms: Atoms,
     calc_factory,
     frame: Atoms | None = None,
-    electrostatics: str = "acks2",
+    charges: str = "neutral",
 ) -> Parameters:
     """The force field of a single atom, which has nothing to fit.
 
@@ -1170,24 +1171,32 @@ def _lone_atom(
     `frame` is `atoms` already labelled as `"equilibrium"`, for a caller that
     wants to keep it; without one, `atoms` is labelled here.
 
-    Under `electrostatics="fixed"` the atom carries its formal charge as its
-    `charge` -- the only charge a lone atom can have, and what lets a halide
-    leave an SN2 carrying the -1 the fixed-charge surface puts on it.
+    Its reference charge is its formal charge whichever source `charges` names
+    -- the only charge a lone atom can have, and what lets a halide leave an SN2
+    carrying its -1: as the `atom` block's `q0` under ACKS2, as its `charge`
+    under point charges.  `"neutral"` is refused for a charged atom, as it is for
+    any charged template (`fit._reference_charges`).
     """
     import networkx as nx
 
     from . import elements
-    from .fit import _nonbonded
+    from .fit import _electrostatic_block, _nonbonded, check_charge_source
 
     params = Parameters(numbers=atoms.get_atomic_numbers())
-    index_column = np.arange(len(atoms))[:, None]
-    for term, kwargs in elements.defaults_for(params.numbers, electrostatics).items():
-        params.terms[term] = {"atoms": index_column.copy(), "kwargs": dict(kwargs)}
-    if electrostatics == "fixed":
-        params.terms["charge"] = {
-            "atoms": index_column.copy(),
-            "kwargs": {"q": np.asarray(atoms.get_initial_charges(), dtype=float)},
-        }
+    q = np.asarray(atoms.get_initial_charges(), dtype=float)
+    check_charge_source(charges)
+    if charges == "neutral" and np.any(q):
+        raise ValueError(
+            f"`electrostatics='neutral'` cannot carry the lone atom "
+            f"{atoms.get_chemical_formula()}'s formal charge of {q.sum():+.0f}; "
+            "fit it with 'mulliken' or 'esp'"
+        )
+    term, block = _electrostatic_block(params.numbers, q)
+    params.terms[term] = block
+    params.terms["lennardjones"] = {
+        "atoms": np.arange(len(atoms))[:, None],
+        "kwargs": elements.lj_defaults(params.numbers),
+    }
 
     if frame is None:
         frame = sampling.label(atoms, calc_factory, "equilibrium")
@@ -1211,58 +1220,50 @@ def state_parameters(reaction: Reaction, side: str, fitted: dict) -> Parameters:
     """One side's force field, over the combined atom indices.
 
     A diabatic state is a bonding topology and nothing else, so this is the
-    fragment fits scattered onto the combined system -- and the two states
-    differ in exactly the bonded terms their two topologies differ in.
+    fragment fits scattered onto the combined system -- every term, the
+    per-atom ones included, mapped onto the combined indices.  The two states
+    therefore differ in their bonded terms *and* in their electrostatic blocks,
+    and both differences are the point:
 
-    The nonbonded blocks are *rebuilt* from the combined element list rather
-    than merged from the fragments.  They are `elements.defaults_for`'s output,
-    never fitted, and ACKS2's per-atom parameters describe atoms rather than
-    molecules; concatenating the fragments' copies would produce the same
-    numbers by a longer route and would leave the block's ordering depending on
-    which side it came from.  What is *not* the same is the energy they add:
-    ACKS2 equilibrates over whatever system it is handed, so the combined value
-    is not the sum of the fragments'.  That difference is identical in both
-    states -- the ACKS2 charges have no topology -- so it cancels exactly in
-    the diabatic gap, and what it leaves in the mean is absorbed by the fitted
-    coupling amplitude, which is fitted against these very diagonals.
+      * **Fixed charges** (`charge`) are molecular, so the two sides of a proton
+        transfer carry different ones -- which is how the excess charge moves
+        with the proton.
+      * **ACKS2** (`atom`) is fragment ACKS2: each state equilibrates around
+        its own reference charges `q0`, which carry each fragment's formal
+        charge, with the softness acting only within a molecule of that state.
+        So an H3O+ holds its +1 and the hop moves it, exactly as DynamicTopology
+        evaluates a template on the diagonal.  Rebuilding the block from element
+        defaults instead -- which is what this used to do, when ACKS2 had no
+        topology -- drops `q0`, and a charged fragment then arrives neutral.
 
-    **Fixed charges are the exception, and are carried per side.**  A `charge`
-    block is not an element default: the fragments' charges are molecular, so
-    the two sides of a proton transfer genuinely carry different ones -- which
-    is the point of them, since that is how the excess charge moves with the
-    proton.  DynamicTopology evaluates exactly that (each template its own
-    charges, on the diagonal), so the fragments' blocks are scattered onto the
-    combined indices like every bonded term.  Every fragment of a side has to
-    carry them, or none: a side half on ACKS2 and half on fixed charges has no
-    single `global_params.electrostatics` to be evaluated under.
+    `mu`, `eta` and the softness are element defaults either way, and
+    `lennardjones` is nothing but element defaults, so scattering them changes
+    no number; it keeps one route for every per-atom block.  Per-atom blocks
+    are put back in atom order, which is how every other per-atom block in this
+    package is laid out.
+
+    Every fragment of a side has to carry the same electrostatic term: a side
+    half on ACKS2 and half on fixed charges has no single
+    `global_params.electrostatics` to be evaluated under.
 
     `E0` is summed: it is a constant per molecule, so a system of several is
     their sum.  The exclusions are not built here: DynamicTopology derives them
     from each side's `bond` terms when it evaluates the state.
     """
-    from . import elements
-
     numbers = reaction.numbers
     params = Parameters(numbers=numbers)
-    index_column = np.arange(len(numbers))[:, None]
     fragments = list(reaction.fragments(side))
     for fragment in fragments:
         if fragment.key not in fitted:
             raise ReactionError(f"no force field was fitted for {fragment.smiles!r}")
-    fixed = {"charge" in fitted[f.key][1].terms for f in fragments}
-    if len(fixed) > 1:
+    kinds = {fitted[f.key][1].electrostatics() for f in fragments}
+    if len(kinds) > 1:
         raise ReactionError(
             f"the {side} fragments disagree about their electrostatics: some "
-            "carry fixed `charge` terms and some ACKS2, and a state is evaluated "
-            "under one.  Refit them with the same `FitConfig.electrostatics`"
+            "carry fixed `charge` terms and some ACKS2 `atom` terms, and a state "
+            "is evaluated under one `global_params.electrostatics`.  Refit them "
+            "under the same one"
         )
-    fixed_charges = fixed == {True}
-
-    defaults = elements.defaults_for(
-        numbers, "fixed" if fixed_charges else "acks2"
-    )
-    for term, kwargs in defaults.items():
-        params.terms[term] = {"atoms": index_column.copy(), "kwargs": dict(kwargs)}
 
     collected: dict[str, dict] = {}
     e0 = 0.0
@@ -1271,7 +1272,7 @@ def state_parameters(reaction: Reaction, side: str, fitted: dict) -> Parameters:
         mapping = _mapping(fragment, built)
         e0 += fragment_params.e0
         for term, block in fragment_params.terms.items():
-            if term in ("atom", "lennardjones", "reference"):
+            if term == "reference":
                 continue
             entry = collected.setdefault(term, {"atoms": [], "kwargs": {}})
             entry["atoms"].append(mapping[np.asarray(block["atoms"])])
@@ -1279,12 +1280,27 @@ def state_parameters(reaction: Reaction, side: str, fitted: dict) -> Parameters:
                 entry["kwargs"].setdefault(name, []).append(np.asarray(value))
 
     for term, entry in collected.items():
-        params.terms[term] = {
-            "atoms": np.concatenate(entry["atoms"], axis=0),
-            "kwargs": {
-                name: np.concatenate(values) for name, values in entry["kwargs"].items()
-            },
+        atoms = np.concatenate(entry["atoms"], axis=0)
+        kwargs = {
+            name: np.concatenate(values) for name, values in entry["kwargs"].items()
         }
+        if len({len(v) for v in kwargs.values()} | {len(atoms)}) > 1:
+            # One fragment's block lacks a kwarg another's has -- an `atom`
+            # block from before `q0` next to one with it.
+            raise ReactionError(
+                f"the {side} fragments' `{term}` blocks carry different "
+                f"parameters ({sorted(kwargs)}); refit the older fragments"
+            )
+        if atoms.shape[1] == 1:
+            order = np.argsort(atoms[:, 0], kind="stable")
+            atoms = atoms[order]
+            kwargs = {name: value[order] for name, value in kwargs.items()}
+            if not np.array_equal(atoms[:, 0], np.arange(len(numbers))):
+                raise ReactionError(
+                    f"the {side} fragments' `{term}` blocks do not cover every "
+                    "atom exactly once"
+                )
+        params.terms[term] = {"atoms": atoms, "kwargs": kwargs}
     params.terms["reference"] = {
         "atoms": np.zeros((1, 1), dtype=int),
         "kwargs": {"E0": np.array([e0])},

@@ -85,7 +85,7 @@ import numpy as np
 from scipy.optimize import least_squares, lsq_linear
 
 from ase import Atoms
-from DynamicTopology.forcefield.evaluate import evaluate_term_dict, term_dict
+from DynamicTopology.forcefield.evaluate import evaluate_term_dict, nonbonded, term_dict
 from DynamicTopology.forcefield.exclusions import exclusion_terms
 from DynamicTopology.forcefield.params import active
 from DynamicTopology.forcefield.qforce import QForce
@@ -127,6 +127,13 @@ POSITIVE_K = ("angle",)
 # refined: `_asymptotes` solves it from the fragments and it is held fixed here.
 _BOND_NAMES: tuple[str, ...] = ("r0", "k", "D")
 
+# Where a template's reference charges can come from; `FitConfig.electrostatics`.
+# `mulliken` and `esp` name the per-atom array on the equilibrium frame they are
+# read from.
+CHARGE_SOURCES: tuple[str, ...] = ("mulliken", "esp", "neutral")
+# What `FitConfig.electrostatics` used to hold, and the source each one meant.
+_LEGACY_SOURCES: dict[str, str] = {"acks2": "neutral", "fixed": "mulliken"}
+
 
 @dataclass
 class FitConfig:
@@ -142,15 +149,17 @@ class FitConfig:
     regularization: float = 1e-3
     seed: int = 0
     bond_form: str = "morse"
-    # Which electrostatic term the fitted field carries.  `"acks2"` is the
-    # `atom` block, with the charges re-solved at every geometry from element
-    # defaults; `"fixed"` is the `charge` block, with one charge per atom taken
-    # from the reference calculation's Mulliken populations, evaluated under
-    # DynamicTopology's `global_params.electrostatics = "pointcharge"`.  Neither is fitted
-    # -- both are part of the baseline the bonded terms are fit against -- so
-    # this changes what that baseline is, and a field refit with the other
-    # setting is a different force field rather than a reparametrized one.
-    electrostatics: str = "acks2"
+    # Where each atom's reference charge comes from -- one of `CHARGE_SOURCES`.
+    # `"mulliken"` and `"esp"` are read off the equilibrium frame
+    # (`_reference_charges`); `"neutral"` is zero on every atom, which only a
+    # neutral template can carry.  *How* those charges are used is not this
+    # field's to say: that is DynamicTopology's `global_params.electrostatics`,
+    # read through `active()` -- `"acks2"` makes them the `atom` block's `q0`,
+    # the reference each state equilibrates around, and `"pointcharge"` makes
+    # them the `charge` block itself.  Neither is fitted -- both are part of the
+    # baseline the bonded terms are fit against -- so a field refit with another
+    # source is a different force field rather than a reparametrized one.
+    electrostatics: str = "neutral"
     # A cap, not a target: the alternation exits on `cycle_tol` well inside it
     # (H2O2 takes 21 to 52 cycles depending on the training set).  The budget is
     # generous because a fit that stops early is no longer idempotent, and
@@ -160,8 +169,37 @@ class FitConfig:
     n_cycles: int = 200
     cycle_tol: float = 1e-4
 
+    def __post_init__(self):
+        if self.electrostatics not in CHARGE_SOURCES:
+            hint = ""
+            if self.electrostatics in _LEGACY_SOURCES:
+                hint = (
+                    f"; {self.electrostatics!r} was the old name for the "
+                    "inference method, which is now `global_params."
+                    "electrostatics` ('acks2' or 'pointcharge') alone"
+                )
+            raise ValueError(
+                f"electrostatics is the reference-charge source, one of "
+                f"{list(CHARGE_SOURCES)}, not {self.electrostatics!r}{hint}"
+            )
+
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_stored(cls, stored: dict) -> "FitConfig":
+        """The config a training set's metadata records, old names translated.
+
+        A set written before the charge source and the inference method were
+        split stores `"acks2"` (element defaults, no reference charge -- what
+        `"neutral"` is now) or `"fixed"` (Mulliken charges).  A *manifest*
+        stating either is refused instead, since there the old name is a
+        setting somebody should restate.
+        """
+        stored = dict(stored)
+        if stored.get("electrostatics") in _LEGACY_SOURCES:
+            stored["electrostatics"] = _LEGACY_SOURCES[stored["electrostatics"]]
+        return cls(**stored)
 
 
 # ---------------------------------------------------------------------------
@@ -455,39 +493,102 @@ def _basis_columns(topology, values, qforce, vecs, skip=("bond",)):
     return np.array(energies), np.array(forces), labels
 
 
-def _charge_block(topology: Topology, equilibrium) -> dict:
-    """The fixed-charge electrostatic block, read off the reference frame.
+def formal_charge(frame, meta: dict | None = None) -> int:
+    """The total charge of the template `frame` stands for.
 
-    The charges are the `mulliken` array that
-    `calculators.pyscf.PySCFCalculator` and `calculators.tblite.TBLiteCalculator`
-    write onto every frame they evaluate and `io.write_training_set` carries
-    into the training file.  They are read
-    from the *equilibrium* frame, the same frame every other fixed value in this
-    fit is measured on, and they are not fit afterwards -- see
-    `FitConfig.electrostatics`.
-
-    They are then averaged within each atom equivalence class.  Mulliken
-    charges come out of a single geometry, so the three hydrogens of a methyl
-    group get three slightly different values, and freezing that asymmetry in
-    would put a spurious electrostatic torsion on a rotor that has none.  Every
-    other parameter in this fit is per-class for the same reason.  A class-wise
-    mean also leaves the total charge exactly where it was, so the template
-    carries its formal charge, as DynamicTopology's point charges need.
+    The frame's own initial charges when it carries any (`build` sets them from
+    the SMILES, and the training file keeps them), else the training set's
+    `charge` metadata, else neutral.
     """
-    if "mulliken" not in equilibrium.arrays:
+    charges = frame.get_initial_charges()
+    if np.any(charges):
+        return int(round(float(np.sum(charges))))
+    return int((meta or {}).get("charge", 0))
+
+
+def check_charge_source(source: str) -> None:
+    """Refuse a charge source the active inference method cannot use.
+
+    Neutral reference charges under `pointcharge` put no charge on any atom of
+    any template -- a dataset with no electrostatics at all, which one that
+    asked for point charges did not mean.  Under `acks2` they are the ordinary
+    choice for a neutral dataset: the charges still equilibrate.
+    """
+    if source == "neutral" and active().electrostatics == "pointcharge":
         raise ValueError(
-            "fitting with `electrostatics='fixed'` needs per-atom charges, and "
-            "this training set carries none: the equilibrium frame has no "
-            "`mulliken` array.  It is written by "
-            "`calculators.pyscf.PySCFCalculator` and "
-            "`calculators.tblite.TBLiteCalculator` (a manifest's `tblite`), so "
-            "a set sampled with plain `tblite.ase.TBLite` or an older version "
-            "of either has to be re-sampled, or the fit has to run with "
-            "`electrostatics='acks2'`"
+            "`global_params.electrostatics='pointcharge'` with "
+            "`electrostatics='neutral'` reference charges puts no charge on any "
+            "atom; fit the charges with 'mulliken' or 'esp'"
         )
-    raw = np.asarray(equilibrium.get_array("mulliken"), dtype=float)
+
+
+def _reference_charges(topology: Topology, equilibrium, source: str, formal: int):
+    """Each atom's reference charge, from `FitConfig.electrostatics`.
+
+    `mulliken` and `esp` are the per-atom arrays of those names on the
+    *equilibrium* frame -- the same frame every other fixed value in this fit is
+    measured on.  `mulliken` is written by `calculators.pyscf.PySCFCalculator`
+    and `calculators.tblite.TBLiteCalculator` onto every frame they evaluate;
+    `esp` by `add_reference_charges`, which fits Merz-Kollman charges to the
+    reference density once (`charges.esp_charges`).  They are not fit
+    afterwards.
+
+    They are then averaged within each atom equivalence class.  Either comes out
+    of a single geometry, so the three hydrogens of a methyl group get three
+    slightly different values, and freezing that asymmetry in would put a
+    spurious electrostatic torsion on a rotor that has none.  Every other
+    parameter in this fit is per-class for the same reason.  A class-wise mean
+    also leaves the total where it was, which is the formal charge -- and that
+    is checked, because it is the property both uses rely on: fragment ACKS2
+    holds each molecule at the sum of its `q0`, and a point-charge template
+    carries its ion's charge.
+
+    `neutral` is zero everywhere, so it is refused for a charged template: that
+    is the case the reference charges exist to carry.
+    """
+    n = len(equilibrium)
+    check_charge_source(source)
+    if source == "neutral":
+        if formal != 0:
+            raise ValueError(
+                f"`electrostatics='neutral'` gives every atom a zero reference "
+                f"charge, which cannot carry this template's formal charge of "
+                f"{formal:+d}; fit it with 'mulliken' or 'esp'"
+            )
+        return np.zeros(n)
+    if source not in equilibrium.arrays:
+        raise ValueError(
+            f"fitting with `electrostatics={source!r}` needs per-atom charges, "
+            f"and this training set's equilibrium frame has no `{source}` array.  "
+            "`add_reference_charges` computes it from the reference calculator "
+            "(`parameterize` and a manifest run call it); `mulliken` is also "
+            "written by `calculators.pyscf.PySCFCalculator` and "
+            "`calculators.tblite.TBLiteCalculator`, but not by plain "
+            "`tblite.ase.TBLite`"
+        )
+    raw = np.asarray(equilibrium.get_array(source), dtype=float)
     q = class_average(raw, topology.atom_classes)
-    return {"atoms": np.arange(len(raw))[:, None], "kwargs": {"q": q}}
+    if abs(float(q.sum()) - formal) > 1e-4:
+        raise ValueError(
+            f"the `{source}` charges sum to {q.sum():+.4f}, not this template's "
+            f"formal charge of {formal:+d}; they were computed for another "
+            "charge state"
+        )
+    return q
+
+
+def _electrostatic_block(numbers, q: np.ndarray) -> tuple[str, dict]:
+    """`(term, block)`: the reference charges `q` as `active()` evaluates them.
+
+    Under `acks2` they are the `atom` block's `q0`, alongside the element
+    defaults; under `pointcharge` they are the `charge` block.
+    """
+    index_column = np.arange(len(numbers))[:, None]
+    if active().electrostatics == "pointcharge":
+        return "charge", {"atoms": index_column, "kwargs": {"q": q}}
+    kwargs = dict(elements.acks2_defaults(numbers))
+    kwargs["q0"] = np.asarray(q, dtype=float)
+    return "atom", {"atoms": index_column, "kwargs": kwargs}
 
 
 def _nonbonded(params, frames, graph):
@@ -505,7 +606,16 @@ def _nonbonded(params, frames, graph):
     number the bonded residuals are taken against, so an exclusion applied here
     and not there -- or the other way round -- lands in every fitted force
     constant as a silent offset.  Going through `evaluate` is what rules that
-    out rather than merely checking it.
+    out rather than merely checking it: its `nonbonded` half, plus `QForce` over
+    the exclusions, is the sum `evaluate_term_dict` adds.
+
+    **The electrostatics is handed `graph`'s bonds**, as atom pairs only.
+    Fragment ACKS2 reads its molecules off the `bond` block, and without one
+    every atom is a molecule of its own, pinned at its own `q0` -- so a
+    hydroxide's two atoms became a -1.03 and a +0.03 point charge 0.97 A apart,
+    0.39 eV below the zero a lone template scores in the simulation, and the
+    bonded fit absorbed that as a 0.2 eV/A force error.  With every `q0` zero
+    the same mistake scored exactly zero, which is why it went unseen.
 
     The virial is dropped: the fit works at fixed cell.
     """
@@ -513,12 +623,18 @@ def _nonbonded(params, frames, graph):
     terms = params.to_terms()
     terms = terms + exclusion_terms(terms, numbers, graph=graph)
     td = term_dict(Atoms(numbers=numbers), terms)
+    edges = np.array(sorted(tuple(sorted(e)) for e in graph.edges()), dtype=int)
+    molecules = dict(td)
+    molecules["bond"] = {"atoms": edges.reshape(-1, 2), "kwargs": {}}
+    qforce = QForce()
 
     energies, forces = [], []
     for frame in frames:
-        result = evaluate_term_dict(frame, td)
-        energies.append(result.energy)
-        forces.append(result.forces.reshape(-1))
+        pos, pbc, cell = frame.positions, frame.pbc, frame.cell.array
+        e_x, f_x, _ = qforce(pos, pbc, cell, td)
+        e_n, f_n, _ = nonbonded(frame, molecules)
+        energies.append(float(e_x + e_n))
+        forces.append((f_x + f_n).reshape(-1))
     return np.array(energies), np.array(forces)
 
 
@@ -801,14 +917,18 @@ def fit(
 
     # --- nonbonded baseline, never fit -------------------------------------
     params = Parameters(numbers=numbers)
-    index_column = np.arange(len(numbers))[:, None]
-    defaults = elements.defaults_for(numbers, config.electrostatics)
-    for term, kwargs in defaults.items():
-        params.terms[term] = {"atoms": index_column.copy(), "kwargs": dict(kwargs)}
-    if config.electrostatics == "fixed":
-        # Not an element default, so it comes from the reference calculation
-        # rather than from `elements`.
-        params.terms["charge"] = _charge_block(topology, equilibrium)
+    q = _reference_charges(
+        topology,
+        equilibrium,
+        config.electrostatics,
+        formal_charge(equilibrium, getattr(training_set, "meta", None)),
+    )
+    term, block = _electrostatic_block(numbers, q)
+    params.terms[term] = block
+    params.terms["lennardjones"] = {
+        "atoms": np.arange(len(numbers))[:, None],
+        "kwargs": elements.lj_defaults(numbers),
+    }
     if seed is not None:
         _apply_nonbonded(params, seed)
 

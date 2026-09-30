@@ -21,15 +21,18 @@ class FastForces(Calculator):
 
     The energy is `DynamicTopology.forcefield.evaluate` -- the single-topology
     sum `System` puts on a diabat: `QForce` for everything bonded, the reference
-    shift and the ZBL and 12-6 exclusions; the electrostatics, screened by its
-    own Coulomb exclusion; and the whole-system `ZBL` and switched 12-6.  So a
+    shift and the ZBL and 12-6 exclusions; the electrostatics; and the
+    whole-system `ZBL` and switched 12-6.  So a
     field fitted and checked here is scored exactly as the reactive simulation
     will score that molecule.
 
     Which electrostatic term is a property of the force field: an `atom` block
-    means ACKS2, with its charges re-solved at every geometry, and a `charge`
-    block means fixed charges.  DynamicTopology's `evaluate` selects the
-    matching term from the block present.
+    means fragment ACKS2, with its charges re-solved at every geometry around
+    the block's reference charges `q0`, and a `charge` block means fixed
+    charges.  DynamicTopology's `evaluate` selects the matching term from the
+    block present.  One molecule on its own scores zero under ACKS2 -- its
+    energy is taken relative to its own isolated minimum -- so the ACKS2 part
+    of this is nonzero only between molecules.
     """
 
     implemented_properties = ["energy", "free_energy", "forces", "stress", "charges"]

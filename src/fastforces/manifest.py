@@ -65,7 +65,7 @@ typo found hours into a DFT run.
 
 import json
 import traceback
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import numpy as np
@@ -84,41 +84,48 @@ class ManifestError(ValueError):
 # global parameters
 # ---------------------------------------------------------------------------
 
-# `FitConfig.electrostatics` <-> `global_params.electrostatics`.
-_ELECTROSTATICS = {"acks2": "acks2", "fixed": "pointcharge"}
-
-
-def resolve_globals(
-    stated: dict | None, config: FitConfig, source: str, config_states: bool = False
-):
-    """The dataset's `ForceFieldParams`, reconciled with `fit_config`.
+def resolve_globals(stated: dict | None, config: FitConfig, source: str, calculator=None):
+    """The dataset's `ForceFieldParams`, checked against `fit_config`.
 
     `global_params` is DynamicTopology's own block -- `ForceFieldParams` parses
     it, unknown keys and bad values included -- and it is *applied*: `run`
     fits the whole manifest under it, so every template is fitted on the
     surface the dataset says it was fitted on.
 
-    `electrostatics` is the one field both blocks can state: DynamicTopology's
-    `"acks2"` / `"pointcharge"` and `FitConfig`'s `"acks2"` / `"fixed"`.  Either
-    may be given alone and the other follows; both, and they have to agree.
-    `config_states` says whether `fit_config` stated it or `config` merely
-    carries the default.
+    Both blocks have an `electrostatics`, and they are two halves of one
+    choice rather than two names for it:
+
+        global_params.electrostatics   how a simulation uses the charges --
+                                       "acks2" (the default) or "pointcharge"
+        fit_config.electrostatics      where the charges come from --
+                                       "mulliken", "esp" or "neutral" (the
+                                       default)
+
+    Under `acks2` the charges are each atom's reference `q0`, around which each
+    state equilibrates; under `pointcharge` they are the fixed charges.  Two
+    pairings cannot work and are refused here, before any calculation:
+    `pointcharge` with `neutral` puts no charge anywhere, and `esp` needs the
+    reference density, which only the `pyscf` calculator has.  A charged
+    molecule under `neutral` is refused when it is fitted
+    (`fit._reference_charges`), since that depends on the molecule.
     """
     try:
         params = ForceFieldParams.from_dict(stated or {}, source=source)
     except ValueError as error:
         raise ManifestError(str(error)) from error
-    wanted = _ELECTROSTATICS[config.electrostatics]
-    if "electrostatics" not in (stated or {}):
-        return replace(params, electrostatics=wanted)
-    if config_states and params.electrostatics != wanted:
+    if config.electrostatics == "neutral" and params.electrostatics == "pointcharge":
         raise ManifestError(
-            f"global_params.electrostatics={params.electrostatics!r} but "
-            f"fit_config.electrostatics={config.electrostatics!r}; they name "
-            "the same choice and have to agree"
+            "global_params.electrostatics='pointcharge' with "
+            "fit_config.electrostatics='neutral' puts no charge on any atom; "
+            "state 'mulliken' or 'esp' as the charges' source"
         )
-    reverse = {v: k for k, v in _ELECTROSTATICS.items()}
-    config.electrostatics = reverse[params.electrostatics]
+    name = (calculator or {}).get("name", "tblite")
+    if config.electrostatics == "esp" and name != "pyscf":
+        raise ManifestError(
+            f"fit_config.electrostatics='esp' fits the charges to the reference "
+            f"density, which the {name!r} calculator does not expose; use "
+            "'pyscf', or 'mulliken'"
+        )
     return params
 
 
@@ -402,16 +409,16 @@ def load(path) -> Manifest:
         raise ManifestError(
             f"unknown fit_config keys {unknown}; allowed: {list(RUN_KEYS) + known}"
         )
-    config = FitConfig(**{k: v for k, v in fit_config.items() if k in known})
+    try:
+        config = FitConfig(**{k: v for k, v in fit_config.items() if k in known})
+    except ValueError as error:
+        raise ManifestError(f"fit_config: {error}") from error
     workdir = root / fit_config.get("workdir", "training")
     calculator = dict(fit_config.get("calculator", {"name": "tblite"}))
     calculator_factory(calculator)  # refuse an unknown backend now
 
     params = resolve_globals(
-        raw.get("global_params"),
-        config,
-        str(path),
-        config_states="electrostatics" in fit_config,
+        raw.get("global_params"), config, str(path), calculator=calculator
     )
 
     molecules = _entries(raw.get("molecules", []), "molecule", MOLECULE_KEYS, root, workdir)
@@ -511,7 +518,7 @@ def fit_molecule(manifest: Manifest, entry: Entry, calc_factory, method: str):
             atoms,
             calc_factory,
             frame=frame,
-            electrostatics=manifest.config.electrostatics,
+            charges=manifest.config.electrostatics,
         )
         equilibrium = frame
         meta = {
@@ -542,6 +549,11 @@ def fit_molecule(manifest: Manifest, entry: Entry, calc_factory, method: str):
                 )
             # A set from before the asymptote was fitted has no fragments.
             ff.add_fragment_frames(str(training), calc_factory)
+            # A set sampled before this source was asked for lacks its charges;
+            # only the equilibrium frame is evaluated again.
+            ff.add_reference_charges(
+                str(training), calc_factory, manifest.config.electrostatics
+            )
             params = ff.fit_from_file(str(training), config=manifest.config)
         else:
             training.parent.mkdir(parents=True, exist_ok=True)

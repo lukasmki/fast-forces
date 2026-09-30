@@ -13,6 +13,7 @@ from fastforces import (
     io,
 )
 from fastforces.topology import enumerate_terms
+from DynamicTopology.forcefield.params import use
 
 # Reference equilibrium values for H2O2, in Angstrom and radians.  They came
 # from wB97X-V; GFN2-xTB lands close enough that they are a meaningful check on
@@ -365,6 +366,15 @@ def test_the_refit_drift_is_the_stopping_tolerance(h2o2_fit):
 # ---------------------------------------------------------------------------
 
 
+def _fixed(path, source="mulliken"):
+    """`fit_from_file` under `pointcharge`, with the charges read from `source`."""
+    with use(electrostatics="pointcharge"):
+        return fit_from_file(
+            path,
+            config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics=source),
+        )
+
+
 def _with_mulliken(path, charges, out):
     """Copy a training set, writing `charges` onto every frame as `mulliken`.
 
@@ -383,16 +393,13 @@ def _with_mulliken(path, charges, out):
 
 
 def test_fixed_charges_come_off_the_training_file(tmp_path, h2o2_fit):
-    """`electrostatics='fixed'` builds a `charge` block and drops `atom`."""
+    """Under `pointcharge` the charges are a `charge` block, and `atom` is gone."""
     _, params, path = h2o2_fit
     # H2O2 as O, O, H, H: the two oxygens are one equivalence class and the two
     # hydrogens another, and these are already symmetric so the class-wise mean
     # leaves them alone.
     charges = np.array([-0.4, -0.4, 0.4, 0.4])
-    fixed = fit_from_file(
-        _with_mulliken(path, charges, tmp_path / "charged.xyz"),
-        config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
-    )
+    fixed = _fixed(_with_mulliken(path, charges, tmp_path / "charged.xyz"))
 
     assert fixed.electrostatics() == "charge"
     assert "atom" not in fixed.terms
@@ -410,10 +417,7 @@ def test_fixed_charges_are_averaged_within_an_equivalence_class(tmp_path, h2o2_f
     """
     _, _, path = h2o2_fit
     lopsided = np.array([-0.5, -0.3, 0.45, 0.35])
-    fixed = fit_from_file(
-        _with_mulliken(path, lopsided, tmp_path / "lopsided.xyz"),
-        config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
-    )
+    fixed = _fixed(_with_mulliken(path, lopsided, tmp_path / "lopsided.xyz"))
 
     q = np.asarray(fixed.terms["charge"]["kwargs"]["q"])
     assert q[0] == pytest.approx(q[1])
@@ -426,10 +430,7 @@ def test_fixed_charges_need_charges_in_the_file(h2o2_fit):
     """A training set without them fails loudly rather than silently unscreened."""
     _, _, path = h2o2_fit
     with pytest.raises(ValueError, match="mulliken"):
-        fit_from_file(
-            path,
-            config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
-        )
+        _fixed(path)
 
 
 def test_tblite_writes_its_charges_onto_the_frame():
@@ -473,7 +474,7 @@ def test_label_replaces_a_stale_array():
 
 
 def test_a_tblite_fixed_charge_fit_freezes_the_xtb_charges(tmp_path):
-    """tblite alone is enough for `electrostatics='fixed'`: no injected array.
+    """tblite alone is enough for Mulliken point charges: no injected array.
 
     The template's charges are the equilibrium frame's xTB charges averaged
     within each equivalence class, and carry the formal charge.
@@ -484,12 +485,15 @@ def test_a_tblite_fixed_charge_fit_freezes_the_xtb_charges(tmp_path):
 
     factory, _ = calculator_factory({"name": "tblite"})
     path = tmp_path / "water.xyz"
-    params = ff.parameterize(
-        ff.build("O"),
-        factory,
-        config=FitConfig(n_mode_frames=10, n_conformers=0, electrostatics="fixed"),
-        training_set=str(path),
-    )
+    with use(electrostatics="pointcharge"):
+        params = ff.parameterize(
+            ff.build("O"),
+            factory,
+            config=FitConfig(
+                n_mode_frames=10, n_conformers=0, electrostatics="mulliken"
+            ),
+            training_set=str(path),
+        )
 
     equilibrium = io.read_training_set(str(path)).equilibrium
     raw = equilibrium.get_array("mulliken")
@@ -509,10 +513,7 @@ def test_the_fixed_charge_fit_is_as_accurate(tmp_path, h2o2_fit):
     """
     _, acks2_params, path = h2o2_fit
     charges = np.array([-0.4, -0.4, 0.4, 0.4])
-    fixed = fit_from_file(
-        _with_mulliken(path, charges, tmp_path / "accuracy.xyz"),
-        config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="fixed"),
-    )
+    fixed = _fixed(_with_mulliken(path, charges, tmp_path / "accuracy.xyz"))
     data = io.read_training_set(path)
     frames = [f for f in data.frames if f.info.get("frame_kind") != "fragment"]
 
@@ -538,7 +539,7 @@ def test_a_fixed_charge_starting_point_switches_the_fit_over(tmp_path, h2o2_fit)
             "charge": {"atoms": np.arange(n)[:, None], "kwargs": {"q": charges}},
         },
     )
-    # Default config, i.e. ACKS2: the starting point is what moves it over.
+    # Under ACKS2, the default: the starting point is what moves it over.
     again = fit_from_file(path, initial=initial)
 
     assert again.electrostatics() == "charge"
@@ -547,14 +548,85 @@ def test_a_fixed_charge_starting_point_switches_the_fit_over(tmp_path, h2o2_fit)
 
 def test_a_diatomic_fits(tmp_path, tblite_factory):
     """A bond and nothing else: the linear block has no columns at all, which
-    used to reach `lsq_linear` as a shape error rather than as an empty solve."""
+    used to reach `lsq_linear` as a shape error rather than as an empty solve.
+
+    Hydroxide, so it also runs the whole reference-charge path from plain
+    `TBLite` -- which writes no `mulliken` array -- to a `q0` carrying the -1.
+    """
     import fastforces as ff
 
     params = ff.parameterize(
         ff.build("[OH-]"),
         tblite_factory,
-        config=FitConfig(n_mode_frames=10, n_conformers=0),
+        config=FitConfig(n_mode_frames=10, n_conformers=0, electrostatics="mulliken"),
         training_set=str(tmp_path / "hydroxide.xyz"),
     )
     assert set(params.terms) - {"atom", "lennardjones"} == {"bond", "reference"}
     assert params.report["force_rmse_eV_A"] < 0.01
+    q0 = params.terms["atom"]["kwargs"]["q0"]
+    assert q0.sum() == pytest.approx(-1.0, abs=1e-6)
+    assert q0[0] < -0.5
+
+
+# ---------------------------------------------------------------------------
+# reference charges under ACKS2
+# ---------------------------------------------------------------------------
+
+
+def test_acks2_carries_the_reference_charges_as_q0(tmp_path, h2o2_fit):
+    """Under ACKS2 the charges are the `atom` block's `q0`, class-averaged,
+    next to the element defaults -- the same numbers `pointcharge` freezes."""
+    _, _, path = h2o2_fit
+    lopsided = np.array([-0.5, -0.3, 0.45, 0.35])
+    params = fit_from_file(
+        _with_mulliken(path, lopsided, tmp_path / "q0.xyz"),
+        config=FitConfig(n_mode_frames=30, n_conformers=0, electrostatics="mulliken"),
+    )
+    assert params.electrostatics() == "atom"
+    kwargs = params.terms["atom"]["kwargs"]
+    assert np.allclose(kwargs["q0"], [-0.4, -0.4, 0.4, 0.4])
+    assert {"mu", "eta", "soft_amp", "soft_decay"} <= set(kwargs)
+
+
+def test_neutral_reference_charges_are_zero(h2o2_fit):
+    _, params, _ = h2o2_fit
+    assert np.array_equal(params.terms["atom"]["kwargs"]["q0"], np.zeros(4))
+
+
+def test_a_charged_template_cannot_be_neutral(tmp_path, tblite_factory):
+    """The case the reference charges exist for: an ion fitted `neutral` would
+    be held at zero charge by fragment ACKS2, so it is refused."""
+    import fastforces as ff
+
+    with pytest.raises(ValueError, match="formal charge of -1"):
+        ff.parameterize(
+            ff.build("[OH-]"),
+            tblite_factory,
+            config=FitConfig(n_mode_frames=4, n_conformers=0),
+            training_set=str(tmp_path / "hydroxide.xyz"),
+        )
+
+
+def test_neutral_point_charges_are_refused(h2o2_fit):
+    _, _, path = h2o2_fit
+    with pytest.raises(ValueError, match="puts no charge on any atom"):
+        _fixed(path, source="neutral")
+
+
+def test_charges_from_another_charge_state_are_refused(tmp_path, h2o2_fit):
+    _, _, path = h2o2_fit
+    with pytest.raises(ValueError, match="another\s+charge state"):
+        _fixed(_with_mulliken(path, np.full(4, 0.25), tmp_path / "cation.xyz"))
+
+
+@pytest.mark.parametrize(
+    "stored, expected", [("acks2", "neutral"), ("fixed", "mulliken"), ("esp", "esp")]
+)
+def test_a_stored_config_translates_the_old_names(stored, expected):
+    """A training set written before the split records the old names."""
+    assert FitConfig.from_stored({"electrostatics": stored}).electrostatics == expected
+
+
+def test_a_new_config_refuses_the_old_names():
+    with pytest.raises(ValueError, match="old name for the inference method"):
+        FitConfig(electrostatics="fixed")

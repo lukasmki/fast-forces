@@ -273,16 +273,17 @@ def defaults_for(
 ) -> dict[str, dict[str, np.ndarray]]:
     """Every per-atom nonbonded default, keyed by the term type that uses it.
 
-    `electrostatics` selects which electrostatic term is seeded.  `"acks2"`
-    gives the `atom` block above; `"fixed"` gives no electrostatic block at all,
-    because the `charge` term's charges are a property of the molecule rather
-    than of its elements and there is no element table that could supply them.
-    The caller reads them off the reference calculation instead -- see
-    `fit._charge_block`.
+    `electrostatics` is DynamicTopology's `global_params.electrostatics`, and
+    selects which electrostatic term is seeded.  `"acks2"` gives the `atom`
+    block above, *without* the reference charges `q0` -- those are a property of
+    the molecule rather than of its elements, so the caller sets them
+    (`fit._electrostatic_block`); left out, DynamicTopology reads them as zero.
+    `"pointcharge"` gives no electrostatic block at all, for the same reason:
+    the `charge` term is nothing but those molecular charges.
     """
-    if electrostatics not in ("acks2", "fixed"):
+    if electrostatics not in ("acks2", "pointcharge"):
         raise ValueError(
-            f"electrostatics is 'acks2' or 'fixed', not {electrostatics!r}"
+            f"electrostatics is 'acks2' or 'pointcharge', not {electrostatics!r}"
         )
     # `atom` first, so the term dict keeps the order it has always been built
     # in and `Parameters.__repr__` reads the same as it used to.

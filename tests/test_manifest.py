@@ -167,34 +167,46 @@ def test_global_params_dynamictopology_would_not_accept_are_refused(
 @pytest.mark.parametrize(
     "global_params, fit_config, expected",
     [
-        ({}, {}, ("acks2", "acks2")),
-        ({}, {"electrostatics": "fixed"}, ("pointcharge", "fixed")),
-        ({"electrostatics": "pointcharge"}, {}, ("pointcharge", "fixed")),
+        ({}, {}, ("acks2", "neutral")),
+        ({}, {"electrostatics": "mulliken"}, ("acks2", "mulliken")),
         (
             {"electrostatics": "pointcharge"},
-            {"electrostatics": "fixed"},
-            ("pointcharge", "fixed"),
+            {"electrostatics": "mulliken"},
+            ("pointcharge", "mulliken"),
+        ),
+        (
+            {"electrostatics": "acks2"},
+            {"electrostatics": "esp", "calculator": {"name": "pyscf"}},
+            ("acks2", "esp"),
         ),
     ],
 )
-def test_the_two_electrostatics_settings_follow_each_other(
+def test_the_two_electrostatics_settings_are_independent(
     tmp_path, global_params, fit_config, expected
 ):
+    """`global_params` says how the charges are used, `fit_config` where they
+    come from; neither is inferred from the other."""
     manifest = M.load(
         write(tmp_path, global_params=global_params, fit_config=fit_config)
     )
     assert (manifest.params.electrostatics, manifest.config.electrostatics) == expected
 
 
-def test_contradictory_electrostatics_are_refused(tmp_path):
-    with pytest.raises(M.ManifestError, match="have to agree"):
-        M.load(
-            write(
-                tmp_path,
-                global_params={"electrostatics": "acks2"},
-                fit_config={"electrostatics": "fixed"},
-            )
-        )
+@pytest.mark.parametrize(
+    "global_params, fit_config, message",
+    [
+        ({"electrostatics": "pointcharge"}, {}, "puts no charge on any atom"),
+        ({}, {"electrostatics": "esp"}, "reference density"),
+        ({}, {"electrostatics": "fixed"}, "old name for the inference method"),
+        ({}, {"electrostatics": "acks2"}, "old name for the inference method"),
+        ({}, {"electrostatics": "resp"}, "reference-charge source"),
+    ],
+)
+def test_electrostatics_that_cannot_work_are_refused(
+    tmp_path, global_params, fit_config, message
+):
+    with pytest.raises(M.ManifestError, match=message):
+        M.load(write(tmp_path, global_params=global_params, fit_config=fit_config))
 
 
 @pytest.mark.parametrize(
@@ -608,10 +620,47 @@ def small_run(tmp_path_factory):
             "calculator": {"name": "tblite", "method": "GFN2-xTB"},
             "n_mode_frames": 10,
             "n_conformers": 0,
+            "electrostatics": "mulliken",
         },
     )
     outcomes = M.run(path, log=lambda *_: None)
     return root, path, outcomes
+
+
+def _q0(path: Path) -> np.ndarray:
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    atoms = [r for r in rows if r["type"] == "atom"]
+    assert [r["atoms"]["p0"] for r in atoms] == list(range(len(atoms)))
+    return np.array([r["kwargs"]["q0"] for r in atoms])
+
+
+@pytest.mark.slow
+def test_every_template_carries_its_formal_charge_as_q0(small_run):
+    """Under ACKS2 an ion keeps its charge only through `q0`: without it the
+    fragment functional holds every molecule at zero.  So each written template
+    -- the reaction's two states included, which used to be rebuilt from element
+    defaults -- has to carry it, and the leaving Cl- has to take its -1 along."""
+    root, _, outcomes = small_run
+    assert all(o.ok for o in outcomes), [o.detail for o in outcomes]
+    assert _q0(root / "molecules" / "cl.jsonl").sum() == pytest.approx(-1.0)
+    assert _q0(root / "molecules" / "oh.jsonl").sum() == pytest.approx(-1.0)
+    assert _q0(root / "molecules" / "ch3cl.jsonl").sum() == pytest.approx(0.0, abs=1e-6)
+
+    frames = _read(root / "rxn" / "sn2.xyz")
+    numbers = frames[0].get_atomic_numbers()
+    chlorines = np.flatnonzero(numbers == 17)
+    states = {
+        side: _q0(root / "rxn" / f"sn2-{side}.jsonl")
+        for side in ("reactant", "product")
+    }
+    for q0 in states.values():
+        assert q0.sum() == pytest.approx(-1.0)
+    # The chloride is one Cl atom on one side and the other on the other.
+    lone = {
+        side: chlorines[np.isclose(q0[chlorines], -1.0)] for side, q0 in states.items()
+    }
+    assert len(lone["reactant"]) == len(lone["product"]) == 1
+    assert lone["reactant"][0] != lone["product"][0]
 
 
 @pytest.mark.slow

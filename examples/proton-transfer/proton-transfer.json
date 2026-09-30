@@ -1,41 +1,37 @@
 {
-    "name" : "Water-fixed-pc",
-    "description": "Bulk water proton transfer with fixed per-template point charges: the Zundel and hydroxide hops plus autoionization, fitted at B3LYP/6-31+G* in the gas phase on the O-O-constrained geometries of DynamicTopology's Water-fixed-pc set",
-    "version" : "1.0.0",
+    "name": "proton-transfer",
+    "description": "Bulk water proton transfer",
+    "version": "1.0.0",
     "author": "Lukas Kim",
     "molecules": [
-        {"id" : 1, "smiles": "[H]",    "path": "molecules/h"},
-        {"id" : 2, "smiles": "[O]",    "path": "molecules/o"},
-        {"id" : 3, "smiles": "[OH-]",  "path": "molecules/h1o"},
-        {"id" : 4, "smiles": "O",      "path": "molecules/h2o"},
-        {"id" : 5, "smiles": "[OH3+]", "path": "molecules/h3o"}
+        {"id": 1, "smiles": "[H]",    "path": "molecules/h"  },
+        {"id": 2, "smiles": "[O]",    "path": "molecules/o"  },
+        {"id": 3, "smiles": "[OH-]",  "path": "molecules/h1o"},
+        {"id": 4, "smiles": "O",      "path": "molecules/h2o"},
+        {"id": 5, "smiles": "[OH3+]", "path": "molecules/h3o"}
     ],
     "reactions": [
-        {"id": 1, "smiles": "[OH3+].O>>O.[OH3+]",    "path" : "reactions/h3o-h2o-transfer"},
-        {"id": 2, "smiles": "O.[OH-]>>[OH-].O",      "path" : "reactions/h2o-oh-transfer"},
-        {"id": 3, "smiles": "O.O>>[OH-].[OH3+]",     "path" : "reactions/h2o-autoionization"}
+        {"id": 1, "smiles": "[OH3+].O>>O.[OH3+]", "path": "reactions/h3o-h2o-transfer"  },
+        {"id": 2, "smiles": "O.[OH-]>>[OH-].O",   "path": "reactions/h2o-oh-transfer"   },
+        {"id": 3, "smiles": "O.O>>[OH-].[OH3+]",  "path": "reactions/h2o-autoionization"}
     ],
     "global_params": {
-        "bond_asymptote": 1.0,
-        "taper_radius": 1.5,
-        "taper_width": 0.12,
-        "switch_radius": 2.2,
-        "soft_core": 0.01,
+        "bond_asymptote" : 1.0,
+        "taper_radius"   : 1.5,
+        "taper_width"    : 0.12,
+        "switch_radius"  : 2.2,
+        "soft_core"      : 0.01,
         "exclusion_depth": 3,
         "exclude_coulomb": true,
-        "gamma": 2.0,
-        "electrostatics": "pointcharge"
+        "gamma"          : 2.0,
+        "electrostatics" : "pointcharge"
     },
     "fit_config": {
-        "calculator": {
-            "name": "pyscf",
-            "xc": "B3LYP",
-            "basis": "6-31+g*"
-        },
-        "workdir": "training",
-        "electrostatics": "fixed",
-        "n_mode_frames": 40,
-        "n_conformers": 0,
-        "temperature": 500.0
+        "calculator"    : {"name": "pyscf", "xc": "B3LYP", "basis": "6-31+g*"},
+        "workdir"       : "training",
+        "electrostatics": "esp",
+        "n_mode_frames" : 40,
+        "n_conformers"  : 0,
+        "temperature"   : 500.0
     }
 }

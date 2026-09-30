@@ -27,13 +27,19 @@ NUMBERS = [8, 1, 8]
 WATER = Path(__file__).resolve().parents[2] / "DynamicTopology" / "datasets" / "Water"
 
 
-def _state(bond, e0=-1.5, charges=None):
+def _state(bond, e0=-1.5, charges=None, q0=None):
+    """`charges` makes it a point-charge state; `q0` an ACKS2 one with those
+    reference charges (zero without)."""
     params = Parameters(numbers=np.asarray(NUMBERS))
     column = np.arange(len(NUMBERS))[:, None]
     fixed = charges is not None
-    defaults = elements.defaults_for(params.numbers, "fixed" if fixed else "acks2")
+    defaults = elements.defaults_for(
+        params.numbers, "pointcharge" if fixed else "acks2"
+    )
     for term, kwargs in defaults.items():
         params.terms[term] = {"atoms": column.copy(), "kwargs": dict(kwargs)}
+    if q0 is not None:
+        params.terms["atom"]["kwargs"]["q0"] = np.asarray(q0, dtype=float)
     if fixed:
         params.terms["charge"] = {
             "atoms": column.copy(),
@@ -94,6 +100,15 @@ def charged_states():
     ]
 
 
+@pytest.fixture
+def ion_states():
+    """The same transfer under fragment ACKS2: the -1 moves through `q0`."""
+    return [
+        _state([0, 1], q0=[-0.4, 0.4, -1.0]),
+        _state([2, 1], q0=[-1.0, 0.4, -0.4]),
+    ]
+
+
 def _evb(positions, states, coupling):
     atoms = Atoms(numbers=NUMBERS, positions=positions)
     atoms.calc = EVB(atoms, states=states, coupling=coupling)
@@ -134,17 +149,22 @@ def test_the_surface_lies_below_both_diabats(geometry, states):
     assert atoms.get_potential_energy() < min(diabatic_energies(atoms, states))
 
 
-@pytest.mark.parametrize("which", ["acks2", "fixed"])
-def test_forces_match_the_numerical_gradient(geometry, states, charged_states, which):
-    """With each state excluding its own pairs, under both electrostatic terms.
+@pytest.mark.parametrize("which", ["acks2", "acks2-ion", "pointcharge"])
+def test_forces_match_the_numerical_gradient(
+    geometry, states, charged_states, ion_states, which
+):
+    """With each state on its own topology, under both electrostatic terms.
 
-    Under ACKS2 the two states share one set of charges and differ in which
-    pairs their Coulomb exclusion removes; under fixed charges they differ in
-    the charges themselves.  Either way the weights move with the geometry, so
-    a Hellmann-Feynman sum assembled with the wrong weights is a force that no
-    longer differentiates the energy it is paired with.
+    Under fragment ACKS2 each state equilibrates over its own molecules, around
+    its own reference charges -- zero, or a -1 that moves with the proton;
+    under fixed charges the states differ in the charges themselves.  Either
+    way the weights move with the geometry, so a Hellmann-Feynman sum assembled
+    with the wrong weights is a force that no longer differentiates the energy
+    it is paired with.
     """
-    pair = states if which == "acks2" else charged_states
+    pair = {"acks2": states, "acks2-ion": ion_states, "pointcharge": charged_states}[
+        which
+    ]
     coupling = _coupling()
     forces = _evb(geometry, pair, coupling).get_forces()
     assert np.allclose(forces, _numeric_forces(geometry, pair, coupling), atol=1e-5)

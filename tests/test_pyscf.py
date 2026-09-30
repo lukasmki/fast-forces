@@ -140,3 +140,39 @@ def test_an_unconverged_scf_raises(hydroxide):
     work.calc = PySCFCalculator(charge=-1, spin=0, **CHEAP)
     with pytest.raises(CalculationFailed, match="not converged"):
         work.get_potential_energy()
+
+
+def test_esp_charges_come_off_the_calculator_s_own_density(hydroxide):
+    """`esp_charges` fits the potential of the density the reference calculator
+    converged -- so they carry the formal charge, and they are what
+    `charges.mk_charges` gives at the same level with its own SCF."""
+    from fastforces.charges import esp_charges, mk_charges
+
+    q = esp_charges(hydroxide, PySCFCalculator(charge=-1, spin=0, **CHEAP))
+    assert q.sum() == pytest.approx(-1.0, abs=1e-8)
+    assert q[0] < -0.9  # the oxygen carries it
+    reference, _ = mk_charges(hydroxide, -1, xc="PBE", basis="6-31g")
+    # density fitting and the grid are the only differences
+    assert np.allclose(q, reference, atol=0.02)
+
+
+def test_add_reference_charges_patches_only_the_equilibrium_frame(tmp_path, hydroxide):
+    """An `esp` source on a set sampled without it evaluates the equilibrium
+    frame once and leaves every other frame as it was."""
+    from fastforces import io, sampling
+
+    def factory(atoms=None):
+        return PySCFCalculator(charge=-1, spin=0, **CHEAP)
+
+    frames = [
+        sampling.label(hydroxide, factory, "equilibrium"),
+        sampling.label(hydroxide, factory, "hessian"),
+    ]
+    path = str(tmp_path / "hydroxide.xyz")
+    io.write_training_set(path, frames, meta={"charge": -1})
+
+    assert ff.add_reference_charges(path, factory, "esp")
+    data = io.read_training_set(path)
+    assert data.equilibrium.get_array("esp").sum() == pytest.approx(-1.0, abs=1e-8)
+    assert "esp" not in data.of_kind("hessian")[0].arrays
+    assert not ff.add_reference_charges(path, factory, "esp")  # already there

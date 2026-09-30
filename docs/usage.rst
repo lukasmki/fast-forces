@@ -75,37 +75,46 @@ is written into the training file with the frames.
 
 .. code-block:: python
 
-   config = ff.FitConfig(temperature=300.0, n_conformers=10, electrostatics="fixed")
+   config = ff.FitConfig(temperature=300.0, n_conformers=10, electrostatics="mulliken")
    params = ff.parameterize(atoms, calc_factory, config=config)
 
-=====================  ===========  =============================================
-field                  default      meaning
-=====================  ===========  =============================================
-``temperature``        ``500.0``    K, for the normal-mode displacements
-``n_mode_frames``      ``40``       number of normal-mode frames
-``n_conformers``       ``20``       number of ``openconf`` conformers
-``torsion_step_deg``   ``15.0``     dihedral scan step
-``hessian_delta``      ``0.01``     Å, finite-difference displacement
-``fmax``               ``1e-3``     eV/Å, relaxation convergence
-``energy_weight``      ``None``     energy vs. force weight; ``None`` balances them
-``regularization``     ``1e-3``     Tikhonov penalty, scaled per column
-``seed``               ``0``        sampling seed
-``bond_form``          ``"morse"``  ``"morse"`` or ``"harmonic"``
-``electrostatics``     ``"acks2"``  ``"acks2"`` or ``"fixed"`` (see below)
-``n_cycles``           ``200``      cap on nonlinear/linear alternations
-``cycle_tol``          ``1e-4``     convergence tolerance of the alternation
-=====================  ===========  =============================================
+=====================  =============  =============================================
+field                  default        meaning
+=====================  =============  =============================================
+``temperature``        ``500.0``      K, for the normal-mode displacements
+``n_mode_frames``      ``40``         number of normal-mode frames
+``n_conformers``       ``20``         number of ``openconf`` conformers
+``torsion_step_deg``   ``15.0``       dihedral scan step
+``hessian_delta``      ``0.01``       Å, finite-difference displacement
+``fmax``               ``1e-3``       eV/Å, relaxation convergence
+``energy_weight``      ``None``       energy vs. force weight; ``None`` balances them
+``regularization``     ``1e-3``       Tikhonov penalty, scaled per column
+``seed``               ``0``          sampling seed
+``bond_form``          ``"morse"``    ``"morse"`` or ``"harmonic"``
+``electrostatics``     ``"neutral"``  ``"mulliken"``, ``"esp"`` or ``"neutral"`` (see below)
+``n_cycles``           ``200``        cap on nonlinear/linear alternations
+``cycle_tol``          ``1e-4``       convergence tolerance of the alternation
+=====================  =============  =============================================
 
-``electrostatics`` picks the electrostatic model the fitted field carries:
+``electrostatics`` picks where each atom's reference charge comes from:
 
-``"acks2"``
-   ACKS2 charge equilibration, from element defaults. The charges are
-   re-solved at every geometry.
+``"mulliken"``
+   The reference calculation's Mulliken populations on the equilibrium frame.
 
-``"fixed"``
-   One charge per atom, taken from the reference calculation's Mulliken
-   populations. This is DynamicTopology's
-   ``global_params.electrostatics = "pointcharge"``.
+``"esp"``
+   Merz-Kollman charges fitted to the reference calculator's own density
+   (``charges.esp_charges``; PySCF only).
+
+``"neutral"``
+   Zero on every atom. Refused for a charged molecule, whose charge the
+   reference charges exist to carry.
+
+Either way they are averaged within each atom equivalence class. *How* they are
+used is DynamicTopology's ``global_params.electrostatics``, read from the active
+parameters (``DynamicTopology.forcefield.params.use``, or a manifest's
+``global_params``): under ``"acks2"`` they are the ``atom`` block's ``q0``, the
+reference each state's charges equilibrate around, and under ``"pointcharge"``
+they are the ``charge`` block itself.
 
 Neither model is fitted. Both are part of the baseline, so a field refit under
 the other setting is a different force field, not the same one with new

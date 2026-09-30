@@ -8,8 +8,8 @@ from tblite.ase import TBLite
 class TBLiteCalculator(TBLite):
     """xTB, writing its atomic charges onto the frame as `mulliken`.
 
-    This is what makes a tblite reference drive a fixed-charge fit:
-    `fit._charge_block` reads the equilibrium frame's `mulliken` array, and
+    This is what makes a tblite reference drive a Mulliken-charge fit:
+    `fit._reference_charges` reads the equilibrium frame's `mulliken` array, and
     `sampling.label` carries whatever a calculator writes onto a frame into the
     training file.  `calculators.pyscf.PySCFCalculator` writes the same array
     from its density matrix; tblite has the charges in `results["charges"]`

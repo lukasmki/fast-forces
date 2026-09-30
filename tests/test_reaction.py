@@ -229,7 +229,8 @@ def _fragment_field(smiles: str, e0: float) -> tuple:
 
     Each bond's `r0` encodes the pair it was fitted for, so a term scattered
     onto the wrong atoms is visible as a wrong number rather than as a wrong
-    shape.
+    shape.  The `atom` block's `q0` is the build's formal charges, spread over
+    the fragment, so the ion's charge can be followed the same way.
     """
     import fastforces as ff
 
@@ -242,6 +243,8 @@ def _fragment_field(smiles: str, e0: float) -> tuple:
     column = np.arange(len(atoms))[:, None]
     for term, kwargs in elements.defaults_for(params.numbers).items():
         params.terms[term] = {"atoms": column.copy(), "kwargs": dict(kwargs)}
+    formal = float(np.sum(atoms.get_initial_charges()))
+    params.terms["atom"]["kwargs"]["q0"] = np.full(len(atoms), formal / len(atoms))
     params.terms["bond"] = {
         "atoms": bonds,
         "kwargs": {
@@ -280,9 +283,8 @@ def test_a_state_sums_the_fragment_reference_energies():
     assert R.state_parameters(reaction, "reactant", fitted).e0 == pytest.approx(-3.0)
 
 
-def test_a_state_rebuilds_its_nonbonded_block_over_every_atom():
-    """`atom` and `lennardjones` are element defaults, never fitted, so they are
-    regenerated over the combined system rather than concatenated."""
+def test_a_state_scatters_its_per_atom_blocks_over_every_atom():
+    """`atom` and `lennardjones` cover the combined system once, in atom order."""
     reaction = R.parse(WATER)
     fitted = {
         f.key: _fragment_field(f.smiles, 0.0) for f in reaction.reactant_fragments
@@ -292,6 +294,23 @@ def test_a_state_rebuilds_its_nonbonded_block_over_every_atom():
     assert list(params.terms["lennardjones"]["atoms"][:, 0]) == list(
         range(len(reaction))
     )
+
+
+def test_a_state_carries_its_fragments_reference_charges():
+    """Fragment ACKS2 holds each molecule at the sum of its `q0`, so the states'
+    `atom` blocks have to be the fragments' own: the +1 sits on the hydronium of
+    each side, and the transfer moves it from O1's molecule to O5's.  Rebuilt
+    from element defaults, both sides came out neutral."""
+    reaction = R.parse(WATER)
+    fitted = {
+        f.key: _fragment_field(f.smiles, 0.0)
+        for f in reaction.reactant_fragments + reaction.product_fragments
+    }
+    hydronium = {"reactant": [0, 1, 2, 3], "product": [1, 4, 5, 6]}
+    for side, members in hydronium.items():
+        q0 = R.state_parameters(reaction, side, fitted).terms["atom"]["kwargs"]["q0"]
+        assert q0.sum() == pytest.approx(1.0)
+        assert q0[members].sum() == pytest.approx(1.0)
 
 
 def test_the_two_states_differ_only_where_their_topologies_do():
@@ -357,7 +376,9 @@ def sn2_surface(tmp_path_factory, tblite_factory):
     return ff.parameterize_reaction(
         SN2,
         tblite_factory,
-        config=ff.FitConfig(n_mode_frames=20, n_conformers=0),
+        config=ff.FitConfig(
+            n_mode_frames=20, n_conformers=0, electrostatics="mulliken"
+        ),
         workdir=str(workdir),
     )
 

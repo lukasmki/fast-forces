@@ -376,9 +376,11 @@ def nonbonded_energy(atoms: Atoms, term_dict: dict) -> float:
 
     DynamicTopology's `evaluate.nonbonded`: everything `evaluate` adds on top of
     `QForce`.  The ZBL and 12-6 sums read no topology, and their intramolecular
-    exclusions are ordinary `QForce` terms; the electrostatics carries its own
-    Coulomb exclusion screen and, under `pointcharge`, the template's charges --
-    so this half is per diabat, which is why `_nonbonded_key` keys on both.
+    exclusions are ordinary `QForce` terms; the electrostatics reads the
+    template's own charges -- its `charge` block and Coulomb exclusion under
+    `pointcharge`, its `atom` block's reference charges `q0` and its molecules
+    under fragment ACKS2 -- so this half is per diabat, which is why
+    `_nonbonded_key` keys on them.
 
     This is the sum a reference atomization energy has to be matched against.
     Fitting the Morse depths against the bonded part alone left every

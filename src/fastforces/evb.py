@@ -15,18 +15,19 @@ construction rather than by tuning a hardness.
 **Each diagonal is DynamicTopology's own single-topology energy**,
 `DynamicTopology.forcefield.evaluate`, and this is exactly the surface
 DynamicTopology's `System` produces for a reaction that forms one EVB block on
-its own.  The argument is linearity, and it holds for both electrostatic terms:
+its own.  The argument is that with one block and no environment, `System`'s
+diagonal *is* each state's own evaluation, under either electrostatic term:
 
-  * Under ACKS2 the charges are solved once from the unscreened kernel -- the
-    same on both states -- and each state's Coulomb exclusion is a screen on one
-    contraction.  `System` puts each state's exclusion on its diagonal and
-    evaluates the electrostatics once through the weighted screen
-    `1 - sum_s w_s M_s`; the contraction is linear in the screen, so that is
-    `sum_s w_s` of each state's own screened energy, which is what `evaluate`
-    returns per state.
+  * Under fragment ACKS2 each state minimizes its own functional -- its own
+    reference charges `q0` (so the hopping charge sits where that state's
+    bonding puts it) and a softness acting only within that state's molecules
+    -- less each of its molecules' isolated minimum.  Other blocks would couple
+    in through their mean charges, but there are none, so a state's
+    electrostatics depends on its own topology and the geometry alone: what
+    `evaluate` returns for it.
   * Under point charges each state carries its own template charges, and within
     one block `System`'s weight matrix is `sum_s w_s q_s q_s^T` -- linear in the
-    weights again, with no second block to couple to.
+    weights, with no second block to couple to.
 
 Forces are Hellmann-Feynman: `dE/dx = c^T (dH/dx) c` with `c` the ground-state
 eigenvector, so the two diabatic gradients and the coupling's own combine with
@@ -127,9 +128,9 @@ class EVB(Calculator):
         self.results["statevec"] = weights
         self.results["hamiltonian"] = hamiltonian
         if self.states[0].electrostatics() is not None:
-            # Identical on both states under ACKS2; under point charges the
-            # ground state's weight-averaged charges, the `qbar` DynamicTopology
-            # couples blocks through.
+            # The ground state's weight-averaged charges under either term --
+            # each state solves its own under fragment ACKS2 -- which is the
+            # `qbar` DynamicTopology couples blocks through.
             self.results["charges"] = (
                 weights[0] * diagonal[0].charges + weights[1] * diagonal[1].charges
             )

@@ -1,7 +1,7 @@
 """11 -- Fixed point charges instead of charge equilibration.
 
-`FitConfig(electrostatics="fixed")` swaps ACKS2 for the `charge` term --
-DynamicTopology's `pointcharge` electrostatics: one charge per atom, carried as
+DynamicTopology's `global_params.electrostatics = "pointcharge"` swaps ACKS2
+for the `charge` term: one charge per atom, carried as
 an ordinary parameter, summed over the same smeared `erf(2r)/r` kernel over the
 same pairs.  The two are alternatives rather than
 additions -- a field carries one or the other, and `Parameters.electrostatics()`
@@ -14,8 +14,10 @@ behind the forces, and nothing to bake in when the field is exported.  What it
 costs is the thing that machinery was there for -- charges that redistribute as
 bonds stretch and as molecules approach.
 
-The charges have to come from somewhere, and they come from the reference
-calculation: a per-atom `mulliken` array on the training frames.
+The charges have to come from somewhere, and `FitConfig(electrostatics=...)`
+says where: here the reference calculation's per-atom `mulliken` array on the
+training frames (`"esp"` fits them to its potential instead).  Under ACKS2 the
+same numbers would be each atom's reference charge `q0`.
 
     uv run python quickstart/11_fixed_charges.py
 """
@@ -30,7 +32,7 @@ import fastforces as ff
 from DynamicTopology.forcefield.electrostatics import Electrostatics
 from DynamicTopology.forcefield.evaluate import surface
 from DynamicTopology.forcefield.ewald import Ewald
-from DynamicTopology.forcefield.params import active
+from DynamicTopology.forcefield.params import active, use
 
 from fastforces.calculator import term_dict_for
 from fastforces.calculators.tblite import TBLiteCalculator
@@ -60,7 +62,10 @@ if not path.exists():
 data = ff.io.read_training_set(str(path))
 atoms = data.equilibrium.copy()
 acks2 = ff.fit_from_file(str(path), config=config)
-fixed = ff.fit_from_file(str(path), config=replace(config, electrostatics="fixed"))
+with use(electrostatics="pointcharge"):
+    fixed = ff.fit_from_file(
+        str(path), config=replace(config, electrostatics="mulliken")
+    )
 
 print(f"{atoms.get_chemical_formula()} from {path.name}: {data.summary()}\n")
 for name, params in (("acks2", acks2), ("fixed", fixed)):
@@ -266,8 +271,8 @@ print(f"  difference, ion minus neutral    "
       f"{energies['net +1 e'] - energies['neutral']:+10.4f} eV")
 
 print("""
-ACKS2 constrains its charges to sum to zero; this term carries whatever it is
-handed.  That used to matter under periodic boundaries, where the `k = 0`
+ACKS2 holds each molecule at the sum of its reference charges `q0`; this term
+carries whatever it is handed.  That used to matter under periodic boundaries, where the `k = 0`
 reciprocal term is the divergent one and was simply omitted -- legitimate for a
 neutral cell, and for a charged one an energy quietly missing its neutralizing
 background.  It is omitted still, but the background it leaves behind,
@@ -284,7 +289,8 @@ own, and a constant that "cancels anyway" no longer does.
 
 Fixed charges also work for reactions.  DynamicTopology gives every template
 its own charges and puts each state's Coulomb energy on that state's diagonal,
-so a proton transfer carries its excess charge with the proton -- which ACKS2's
-single sum-zero constraint cannot do.  `reaction.state_parameters` scatters each
-side's fragment charges onto that side, and `EVB` evaluates each diabat under
-them, exactly as a DynamicTopology simulation of the same dataset would.""")
+so a proton transfer carries its excess charge with the proton.  Fragment ACKS2
+does the same through each template's `q0`.  Either way
+`reaction.state_parameters` scatters each side's fragment charges onto that
+side, and `EVB` evaluates each diabat under them, exactly as a DynamicTopology
+simulation of the same dataset would.""")

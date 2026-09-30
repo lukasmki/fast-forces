@@ -19,7 +19,7 @@ ignores it.
        ],
        "global_params": {"bond_asymptote": 1.0, "electrostatics": "pointcharge"},
        "fit_config": {"calculator": {"name": "tblite"}, "workdir": "training",
-                      "electrostatics": "fixed"}
+                      "electrostatics": "mulliken"}
    }
 
 Fit it from the command line or from Python:
@@ -115,8 +115,8 @@ key               default                 meaning
 backend's constructor:
 
 ``{"name": "tblite", "method": "GFN2-xTB"}``
-   tblite. With ``electrostatics: "fixed"``, the fixed charges are its xTB
-   charges.
+   tblite. With ``electrostatics: "mulliken"``, the reference charges are its
+   xTB charges.
 
 ``{"name": "pyscf", "xc": "...", "basis": "...", "pcm": "IEF-PCM", "pcm_eps": 78.36}``
    PySCF DFT (ωB97X-V/cc-pVTZ by default). ``pcm`` adds implicit solvent,
@@ -176,6 +176,21 @@ entry is fitted under these values, so the dataset is fitted on exactly the
 surface it will be simulated on. Values it leaves out take DynamicTopology's
 defaults.
 
-``global_params.electrostatics`` and ``fit_config.electrostatics`` name the
-same choice (``"pointcharge"`` ≡ ``"fixed"``). Either may be given, and if both
-are given they must agree.
+``global_params.electrostatics`` and ``fit_config.electrostatics`` are the two
+halves of one choice:
+
+``global_params.electrostatics``
+   How a simulation uses the charges: ``"acks2"`` (the default), fragment ACKS2
+   equilibrated around each atom's reference charge ``q0``, or
+   ``"pointcharge"``, the charges held fixed.
+
+``fit_config.electrostatics``
+   Where the charges come from: ``"mulliken"`` (the reference calculator's
+   populations), ``"esp"`` (Merz-Kollman charges fitted to the reference
+   density; needs the ``pyscf`` calculator) or ``"neutral"`` (zero on every
+   atom, the default).
+
+Under ``acks2`` the reference charges are what keep an ion's formal charge on
+it, so a charged molecule under ``"neutral"`` is refused when it is fitted.
+``pointcharge`` with ``"neutral"`` is refused when the manifest is loaded, since
+it would put no charge anywhere.

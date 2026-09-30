@@ -9,7 +9,7 @@ Fast automatic parameterization of the [DynamicTopology](http://github.com/lukas
 - Writes DynamicTopology datasets directly (`.jsonl` in eV and Å, the units DynamicTopology holds them in), and exports to OpenMM
 - Use the included FastForces calculator to immediately start running simulations
 - All training data is saved into one extended XYZ file: Everything necessary to reproduce the fit is contained in one file
-- Two electrostatics models: ACKS2 charge equilibration, whose charges are re-solved at every geometry, or fixed point charges taken from the reference calculation's Mulliken populations (`FitConfig(electrostatics="fixed")`, DynamicTopology's `pointcharge`)
+- Two electrostatics models, chosen by DynamicTopology's `global_params.electrostatics`: fragment ACKS2 charge equilibration (`acks2`), whose charges are re-solved at every geometry around each atom's reference charge `q0`, or fixed point charges (`pointcharge`). Either way the per-atom charges come from `FitConfig.electrostatics`: the reference calculation's Mulliken populations (`"mulliken"`), Merz-Kollman charges fitted to its electrostatic potential (`"esp"`, PySCF only), or zero (`"neutral"`, the default, neutral molecules only)
 - Start a fit from an existing force field with `initial=`, rather than from the element table
 - Parameterize a *reaction* from an atom-mapped reaction SMILES: a force field per fragment, a Sella transition state, and a fitted EVB off-diagonal coupling
 
@@ -95,7 +95,7 @@ field plus:
 
 | key | default | meaning |
 | --- | --- | --- |
-| `calculator` | `{"name": "tblite"}` | `tblite` (`method`; its xTB charges are what `electrostatics: "fixed"` freezes) or `pyscf` (`xc`, `basis`, and `pcm`/`pcm_eps` for implicit solvent, e.g. `"IEF-PCM"`); other keys go to the constructor |
+| `calculator` | `{"name": "tblite"}` | `tblite` (`method`; its xTB charges are what `electrostatics: "mulliken"` reads) or `pyscf` (`xc`, `basis`, and `pcm`/`pcm_eps` for implicit solvent, e.g. `"IEF-PCM"`); other keys go to the constructor |
 | `workdir` | `"training"` | where the full training sets go, mirroring each `path` |
 | `embed_seed` | 42 | seed for conformer embedding and the saddle guess |
 | `eps` | 1e-3 | coupling quench at the nearer endpoint |
@@ -148,9 +148,14 @@ single points added on the next run, and every other frame in it is kept.
 `global_params` is
 DynamicTopology's own block (`forcefield.params.ForceFieldParams`) and it is
 *applied*: the whole manifest is fitted under it, so the dataset is fitted at
-exactly the constants it states. Its `electrostatics` and
-`fit_config.electrostatics` name the same choice; either may be given, and both
-have to agree.
+exactly the constants it states. The two `electrostatics` keys are the two
+halves of one choice: `global_params.electrostatics` is how a simulation uses
+the charges (`"acks2"`, the default, or `"pointcharge"`), and
+`fit_config.electrostatics` is where they come from (`"mulliken"`, `"esp"` or
+`"neutral"`, the default). Under `acks2` they are each atom's reference charge
+`q0`, which is what keeps an ion's formal charge on it; under `pointcharge` they
+are the fixed charges. A charged molecule needs `"mulliken"` or `"esp"`, and so
+does `pointcharge`.
 
 ## Examples
 

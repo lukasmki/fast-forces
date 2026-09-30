@@ -1,0 +1,31 @@
+{
+    "name": "paba-water",
+    "description": "PABA and water proton transfer",
+    "version": "1.0.0",
+    "author": "Lukas Kim",
+    "molecules": [
+        {"id": 1, "smiles": "O=C(O)c1ccc(N)cc1",    "path": "molecules/paba"  },
+        {"id": 2, "smiles": "O",      "path": "molecules/h2o"}
+    ],
+    "reactions": [
+    ],
+    "global_params": {
+        "bond_asymptote" : 1.0,
+        "taper_radius"   : 1.5,
+        "taper_width"    : 0.12,
+        "switch_radius"  : 2.2,
+        "soft_core"      : 0.01,
+        "exclusion_depth": 3,
+        "exclude_coulomb": true,
+        "gamma"          : 2.0,
+        "electrostatics" : "acks2"
+    },
+    "fit_config": {
+        "calculator"    : {"name": "pyscf", "xc": "B3LYP", "basis": "6-31g*"},
+        "workdir"       : "training",
+        "electrostatics": "mulliken",
+        "n_mode_frames" : 40,
+        "n_conformers"  : 0,
+        "temperature"   : 500.0
+    }
+}

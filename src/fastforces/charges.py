@@ -1,9 +1,13 @@
-"""Fixed point charges from the reference electrostatic potential (Merz-Kollman).
+"""Reference charges from the electrostatic potential (Merz-Kollman).
 
-The alternative to `fit._charge_block`'s Mulliken populations for a fixed-charge
-(`pointcharge`) dataset: each template's charges are the least-squares fit to
-its own electrostatic potential, at the reference level of theory and at the
-template's own geometry, with the total constrained to the formal charge.
+The alternative to Mulliken populations for a template's reference charges
+(`FitConfig.electrostatics = "esp"`): each template's charges are the
+least-squares fit to its own electrostatic potential, at the reference level of
+theory and at the template's own geometry, with the total constrained to the
+formal charge.  Under `global_params.electrostatics = "pointcharge"` they are the
+fixed charges; under `"acks2"` they are the reference `q0` each state
+equilibrates around.  `esp_charges` fits them to the reference calculator's own
+density, which is what a fit uses; `mk_charges` runs its own gas-phase SCF.
 
 The potential is sampled on four shells at 1.4, 1.6, 1.8 and 2.0 times each
 atom's Merz-Kollman radius, at 5 points per A^2, keeping only points outside
@@ -124,7 +128,6 @@ def mk_charges(
 
     if len(atoms) == 1:
         return np.array([float(charge)]), 0.0
-    symbols = atoms.get_chemical_symbols()
     mol = ase_to_pyscf(atoms, basis=basis, charge=charge, spin=spin, verbose=0)
     mf = dft.RKS(mol) if spin == 0 else dft.UKS(mol)
     mf.xc = xc
@@ -136,22 +139,53 @@ def mk_charges(
     mf.kernel()
     if not mf.converged:
         raise RuntimeError(f"SCF did not converge for {atoms.get_chemical_formula()}")
-    dm = mf.make_rdm1()
-    if dm.ndim == 3:  # unrestricted: the potential sees the total density
-        dm = dm[0] + dm[1]
-
-    points = mk_points(symbols, atoms.positions)
-    V = esp(mol, dm, points / BOHR)
-    q = fit_esp(atoms.positions / BOHR, V, points / BOHR, charge)
+    q, rrms = _mk_fit(mol, mf.make_rdm1(), atoms, charge)
     if classes is None:
         from .topology import enumerate_terms
 
         classes = enumerate_terms(atoms).atom_classes
-    q = class_average(q, classes)
+    return class_average(q, classes), rrms
 
+
+def _mk_fit(mol, dm: np.ndarray, atoms: Atoms, charge: int) -> tuple[np.ndarray, float]:
+    """Merz-Kollman charges for the density `dm` of `mol`, and the relative RMS."""
+    dm = np.asarray(dm)
+    if dm.ndim == 3:  # unrestricted: the potential sees the total density
+        dm = dm[0] + dm[1]
+    points = mk_points(atoms.get_chemical_symbols(), atoms.positions)
+    V = esp(mol, dm, points / BOHR)
+    q = fit_esp(atoms.positions / BOHR, V, points / BOHR, charge)
     inv = 1.0 / np.linalg.norm(points[:, None] / BOHR - atoms.positions[None] / BOHR, axis=-1)
     rrms = np.sqrt(np.mean((inv @ q - V) ** 2) / np.mean(V**2))
     return q, float(rrms)
+
+
+def esp_charges(atoms: Atoms, calc) -> np.ndarray:
+    """Merz-Kollman charges of `atoms` at the reference calculator's own density.
+
+    `calc` is a `calculators.pyscf.PySCFCalculator` -- the one the training set
+    was labelled with -- so the charges are at exactly its level of theory,
+    density fitting and continuum included (a PCM density is polarized by its
+    reaction field; the potential fitted is the solute's own).  They are *not*
+    class-averaged here: `fit._reference_charges` does that, as it does for
+    Mulliken charges.  This is what `FitConfig.electrostatics = "esp"` reads.
+    """
+    from .calculators.pyscf import PySCFCalculator
+
+    charge = int(round(float(np.sum(atoms.get_initial_charges()))))
+    if len(atoms) == 1:
+        return np.array([float(charge)])
+    if not isinstance(calc, PySCFCalculator):
+        raise TypeError(
+            "ESP charges are fitted to the reference density, and only "
+            f"`PySCFCalculator` exposes one, not {type(calc).__name__}; use "
+            "`electrostatics='mulliken'` with this calculator"
+        )
+    frame = atoms.copy()
+    frame.calc = calc
+    frame.get_potential_energy()
+    q, _ = _mk_fit(calc.mf.mol, calc.mf.make_rdm1(), frame, charge)
+    return q
 
 
 def charge_terms(q: np.ndarray) -> list[dict]:
