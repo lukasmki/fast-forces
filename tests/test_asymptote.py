@@ -129,8 +129,21 @@ def test_a_diatomic_levels_off_bond_asymptote_above_its_fragments(h2_fit):
 def test_the_fragments_are_not_fitted_to(h2_fit):
     params, path = h2_fit
     data = io.read_training_set(path)
-    assert params.report["frames"] == len(data.frames) - len(data.of_kind("fragment"))
+    assert params.report["frames"] == len(data.frames) - len(
+        data.of_kind("fragment", "atom")
+    )
     assert "fragment" not in params.report
+
+
+@pytest.mark.slow
+def test_a_diatomic_needs_no_asymptote_beyond_the_default(h2_fit):
+    """A diatomic's fragments are its free atoms, so once its depth carries the
+    atomization energy the stretched limit is already where `bond_asymptote`
+    puts it: the two solves agree, and `h` comes out at the default."""
+    params, _ = h2_fit
+    assert params.terms["bond"]["kwargs"]["h"] == pytest.approx(
+        active().bond_asymptote, abs=1e-6
+    )
 
 
 @pytest.mark.slow

@@ -40,11 +40,14 @@ reference calculator:
 
 The nonbonded terms (ACKS2 or fixed charges, tapered ZBL, switched 12-6) are
 *not* fitted. They come from element defaults and are subtracted from the
-reference as a fixed baseline, and the bonded terms fit what is left. The bond
-parameters are solved nonlinearly. Every other force constant multiplies a
-function of the geometry alone, so all of them together are one bounded linear
-least-squares solve. The fit alternates the two until the residual stops moving
-(``cycle_tol``).
+reference as a fixed baseline, and the bonded terms fit what is left. With the
+equilibrium values fixed at the relaxed geometry, every force constant
+multiplies a function of the geometry alone, so all of them together are one
+bounded linear least-squares solve. The bond enters it as a harmonic spring
+about its measured ``r0`` and is written as a Morse bond with the same ``k``
+(its curvature at ``r0``), a depth ``D`` scaled from the element table so the
+bonds carry the atomization energy against free-atom frames, and an asymptote
+``h`` solved from the fragment frames.
 
 Any calculator
 --------------
@@ -90,10 +93,7 @@ field                  default        meaning
 ``energy_weight``      ``None``       energy vs. force weight; ``None`` balances them
 ``regularization``     ``1e-3``       Tikhonov penalty, scaled per column
 ``seed``               ``0``          sampling seed
-``bond_form``          ``"morse"``    ``"morse"`` or ``"harmonic"``
 ``electrostatics``     ``"neutral"``  ``"mulliken"``, ``"esp"`` or ``"neutral"`` (see below)
-``n_cycles``           ``200``        cap on nonlinear/linear alternations
-``cycle_tol``          ``1e-4``       convergence tolerance of the alternation
 =====================  =============  =============================================
 
 ``electrostatics`` picks where each atom's reference charge comes from:
@@ -154,11 +154,11 @@ file.
    params = ff.parameterize(atoms, calc_factory, initial="previous.jsonl")
 
 Terms are matched by their atom slots. Anything the supplied field does not
-cover keeps its ordinary default. The supplied bond parameters are where the
-nonlinear solve starts, and the supplied equilibrium values and nonbonded
-baseline are held fixed. The remaining force constants come from a linear solve
-that has no starting point. Refitting a converged field from its own output is
-idempotent to within ``cycle_tol``.
+cover keeps its ordinary default. The supplied equilibrium values (bond ``r0``
+excepted, which is always measured), bond depths ``D`` and asymptotes, and
+nonbonded baseline are held fixed. The force constants come from a linear solve
+that has no starting point, so a supplied ``k`` does not reach the result.
+Refitting a field from its own output returns it to round-off.
 
 Running a simulation
 --------------------

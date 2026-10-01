@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from fastforces.fit import GEOMETRIC, _seed_from, as_parameters
+from fastforces.fit import GEOMETRIC, _rows_by_atoms, _seed_from, as_parameters
 from fastforces.params import Parameters
 from fastforces.topology import Topology, enumerate_terms
 
@@ -55,13 +55,8 @@ def test_every_class_is_seeded_from_a_matching_field(topology):
     initial = synthetic(topology)
     seed = _seed_from(topology, initial, len(H2O2))
 
-    for name, expected in (("r0", 1.0), ("k", 1.25), ("D", 1.5)):
-        classes = np.arange(topology.n_classes("bond"))
-        assert seed.bond[name] == pytest.approx(expected + 0.03 * classes)
-
-    for (term, c), value in seed.k.items():
-        n_geometric = len(GEOMETRIC[term])
-        assert value == pytest.approx(1.0 + 0.25 * n_geometric + 0.03 * c)
+    classes = np.arange(topology.n_classes("bond"))
+    assert seed.bond["D"] == pytest.approx(1.5 + 0.03 * classes)
 
     assert seed.n_seeded == sum(topology.n_classes(t) for t in topology.atoms)
 
@@ -73,11 +68,18 @@ def test_geometric_values_land_on_every_row_of_their_class(topology):
     assert theta0 == pytest.approx(1.0 + 0.03 * topology.classes["angle"])
 
 
-def test_bond_r0_seeds_the_nonlinear_block_not_the_fixed_values(topology):
-    """`values["bond"]["r0"]` sets the refinement's bounds, so it stays measured."""
+def test_only_the_bond_depth_is_seeded(topology):
+    """`r0` is always measured and `k` always fitted, so neither is carried."""
     seed = _seed_from(topology, synthetic(topology), len(H2O2))
     assert "bond" not in seed.values
-    assert "r0" in seed.bond
+    assert set(seed.bond) == {"D"}
+
+
+def test_a_supplied_asymptote_arrives_as_its_stretched_well(topology):
+    initial = synthetic(topology)
+    initial.terms["bond"]["kwargs"]["h"] = np.full(len(topology.atoms["bond"]), 2.0)
+    seed = _seed_from(topology, initial, len(H2O2))
+    assert seed.bond["Dw"] == pytest.approx(seed.bond["D"] + 2.0)
 
 
 def test_dihedral_rows_are_keyed_by_periodicity(topology):
@@ -86,11 +88,8 @@ def test_dihedral_rows_are_keyed_by_periodicity(topology):
     n_values = initial.terms["periodicdihedral"]["kwargs"]["n"]
     assert len(set(n_values.tolist())) > 1
 
-    # Scramble one periodicity's force constants; only that class may move.
-    initial.terms["periodicdihedral"]["kwargs"]["k"][n_values == 1] += 5.0
-    seed = _seed_from(topology, initial, len(H2O2))
-    moved = [c for (t, c), v in seed.k.items() if t == "periodicdihedral" and v > 5.0]
-    assert len(moved) == int(np.sum(n_values == 1))
+    rows = _rows_by_atoms(initial.terms["periodicdihedral"])
+    assert len(rows) == len(n_values)
 
 
 def test_a_partial_field_leaves_the_rest_unseeded(topology):
@@ -104,9 +103,9 @@ def test_a_partial_field_leaves_the_rest_unseeded(topology):
     block["kwargs"] = {n: v[keep] for n, v in block["kwargs"].items()}
 
     seed = _seed_from(topology, initial, len(H2O2))
-    assert not any(term == "angle" for term, _ in seed.k)
-    assert not np.isnan(seed.bond["r0"][0])
-    assert np.all(np.isnan(seed.bond["r0"][1:]))
+    assert "angle" not in seed.values
+    assert not np.isnan(seed.bond["D"][0])
+    assert np.all(np.isnan(seed.bond["D"][1:]))
 
 
 def test_nonbonded_terms_are_carried_through(topology):

@@ -394,3 +394,34 @@ def fragment_frames(equilibrium: Atoms, calc_factory, topology=None) -> list[Ato
         if all(frame is not None for frame in pair):
             frames += pair
     return frames
+
+
+def atom_frames(equilibrium: Atoms, calc_factory) -> list[Atoms]:
+    """One free, neutral atom of each element in the molecule, labelled.
+
+    What a molecule's atomization energy is measured against, `E(molecule) -
+    sum_i E(atom_i)`, which `fit` puts on the bonds' depths.  Each atom is at
+    its ground-state spin (`elements.ATOM_SPIN`, Hund's rule), and neutral
+    whatever the molecule's charge, the convention `label` uses for a dataset's
+    atomization energies -- so an ion's includes its ionization energy or
+    electron affinity.
+
+    Tagged `"atom"`.  All or nothing: the sum needs every element, so if any
+    one fails to label, or has no tabulated spin, none is returned and the
+    depths keep their element-table values.
+    """
+    from .elements import ATOM_SPIN
+
+    if len(equilibrium) < 2:
+        return []
+    frames = []
+    for symbol in sorted(set(equilibrium.get_chemical_symbols())):
+        if symbol not in ATOM_SPIN:
+            return []
+        atom = Atoms(symbol, positions=[[0.0, 0.0, 0.0]])
+        atom.info["spin"] = ATOM_SPIN[symbol]
+        frame = label(atom, calc_factory, "atom", strict=False)
+        if frame is None:
+            return []
+        frames.append(frame)
+    return frames

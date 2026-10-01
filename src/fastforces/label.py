@@ -29,50 +29,10 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from pyscf import dft, gto, lib
 
 from .calculators.pyscf import ase_to_pyscf
+from .elements import ATOM_SPIN
 from .io import read_frames, write_frames
 
 XC = "wb97x_v"
-
-# Number of unpaired electrons (2S = n_alpha - n_beta) in the ground state
-# of the neutral atoms, i.e. Hund's rule applied to the atomic configuration.
-ATOM_SPIN: dict[str, int] = {
-    "H": 1,
-    "He": 0,
-    "Li": 1,
-    "Be": 0,
-    "B": 1,
-    "C": 2,
-    "N": 3,
-    "O": 2,
-    "F": 1,
-    "Ne": 0,
-    "Na": 1,
-    "Mg": 0,
-    "Al": 1,
-    "Si": 2,
-    "P": 3,
-    "S": 2,
-    "Cl": 1,
-    "Ar": 0,
-    "K": 1,
-    "Ca": 0,
-    "Sc": 1,
-    "Ti": 2,
-    "V": 3,
-    "Cr": 6,
-    "Mn": 5,
-    "Fe": 4,
-    "Co": 3,
-    "Ni": 2,
-    "Cu": 1,
-    "Zn": 0,
-    "Ga": 1,
-    "Ge": 2,
-    "As": 3,
-    "Se": 2,
-    "Br": 1,
-    "Kr": 0,
-}
 
 
 def _run_scf(mol: gto.Mole, grid_level: int, nlc_grid_level: int, df: bool) -> float:

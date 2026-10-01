@@ -183,9 +183,11 @@ DynamicTopology.
 A Morse bond's stretched branch climbs a well `Dw = D + h` and levels off `h`
 above zero. An EVB fission needs the bonded state to finish *above* its
 fragments, so that the two diabats cross. Near-equilibrium frames cannot see
-where the curve ends, and the fitted `D` is not the dissociation energy. Left
-alone, `h = bond_asymptote` put the limit wherever `D` happened to fall: 0.28
-eV *below* two H atoms for H2 at B3LYP, whose diabats then never crossed.
+where the curve ends, and `D` is scaled so that all the bonds together carry
+the molecule's atomization energy, which says nothing about where any one bond's
+fragments sit. Left alone, `h = bond_asymptote` put the limit wherever `D`
+happened to fall: 0.28 eV *below* two H atoms for H2 at B3LYP, whose diabats
+then never crossed.
 
 So each molecule's training set also carries the two fragments of each bond
 class. They are two single points at the frozen equilibrium geometry, with
@@ -195,8 +197,8 @@ each class's `Dw` so that pulling the bond apart ends exactly `bond_asymptote`
 above those two energies, which is where DynamicTopology's defaults put it
 for a bond whose `D` is its dissociation energy. `h = Dw - D` is written to
 the `.jsonl`, and the fit report lists it as `asymptote_h`. It can come out
-negative when the fitted `D` overshoots: O2's is about -4 eV. Ring bonds, and
-molecules built without a SMILES, keep `bond_asymptote`.
+negative when `D` overshoots the fragments. Ring bonds, and molecules built
+without a SMILES, keep `bond_asymptote`.
 
 ## Starting from an existing force field
 
@@ -208,50 +210,66 @@ params = ff.parameterize(atoms, calc_factory=..., initial="previous.jsonl")
 ```
 
 Terms are matched to the topology by their atom slots, and anything the supplied
-field does not cover keeps its ordinary default. The bond parameters start a
-local nonlinear solve, and the equilibrium values and nonbonded baseline are
-held fixed rather than fit, so supplying any of those changes the result; the
-remaining force constants come from a global least squares that has no starting
-point. `quickstart/09_starting_point.py` works through the distinction.
+field does not cover keeps its ordinary default. Only what the fit holds fixed
+can be supplied: the equilibrium values (bond `r0` excepted, which is always
+measured), the bond depths `D` and asymptotes, and the nonbonded baseline. Every
+force constant comes from one global least squares that has no starting point,
+so a supplied `k` does not reach the result.
 
-### Is fitting idempotent?
+### How the bonds are fitted
 
-Yes, to within `cycle_tol`. Refitting a converged field from its own output
-stops after two cycles and predicts the same thing to five figures; the
-parameters land within a few percent on the shallowest cross terms and a
-fraction of a percent on the well-determined ones. Tightening `cycle_tol` from
-its default `1e-4` to `1e-8` shrinks that drift ~80x for about 40 extra cycles
--- drift that shrinks with the tolerance is a fixed point being approached,
-where a flat direction being walked would not.
+Every bonded term is a force constant times a function of the geometry, so with
+the equilibrium values fixed every `k` is one bounded linear least-squares solve.
+The bond joins that solve as a harmonic spring `k*dr**2/2` about its measured
+`r0`, and is written as the Morse bond a reactive simulation needs: a Morse bond
+`D*(1 - exp(-a*dr))**2 - D`, `a = sqrt(k/2D)`, is `k*dr**2/2 - D` to second
+order, so the harmonic `k` is its curvature at `r0` whatever `D` is. `h` comes
+from the fragments (above).
 
-That holds because `E0` is not fitted. Every energy residual in the fit is
-mean-centered, so a constant shift of the whole profile costs nothing anywhere,
-and `E0` is read off the leftover mean once the fit has converged. Fitting it
-alongside `D` put a flat direction straight through the parameter space: the
-Morse form carries a constant `-D` per bond, and with `a = sqrt(k/2D)` its well
-is `k*dr**2/2` to second order, so near equilibrium `D` reaches the energy
-through that constant and little else. The nonlinear block would raise `D` and
-the linear block would raise `E0` to compensate, for hundreds of cycles, with
-the residual barely moving.
+A molecule's total energy is the sum of its force field terms plus `E0`, a
+fixed scalar that shifts its whole potential energy surface. The shift is what
+keeps the relative energies of molecules right: a reactant state and a product
+state, each the sum of its molecules, have to carry the reference offset
+between them at the two ends of a reaction coordinate, so every molecule has
+to sit on the reference calculator's absolute scale. `E0` is the offset that
+puts it there.
 
-Removing the offset from the fit is what fixed it, and it costs nothing:
+It is not in the solve. Every energy residual is mean-centered, and `E0` is
+read off the leftover mean afterwards, plus the `-D` per bond the Morse form
+carries at its minimum. So a refit from a field's own output returns it to
+round-off, and so does one from a field with every `k` scrambled.
 
-| | cycles to converge | energy RMSE (eV) | force RMSE (eV/A) |
+### Where the bond depths come from
+
+The frames near equilibrium see `D` only through anharmonicity, so it is not
+fitted to them. It starts from the element table (or `initial=`), and every
+depth is then scaled by one factor so the bonds carry the molecule's
+atomization energy, `E(molecule) - sum_i E(atom_i)`. The free atoms are one
+single point per element in the training set, neutral and at their Hund's-rule
+spin, computed with the same reference calculator. Because `E0` moves with the
+depths, a scale changes how much of the molecule's total the bonds hold and how
+much the shift holds, never the total, so no relative energy moves. The scale
+is closed form: it is the one that leaves `E0` equal to the summed free-atom
+energies, which is the same for reactants and products, so the offset between
+them is carried by the terms alone. "Carry" means
+the whole field at equilibrium, as `refine` matches it, so the depths add up to
+the atomization energy less what the angles, cross terms and nonbonded
+baseline hold there. The fit report lists the factor as `depth_scale`.
+
+For an ion the atoms are still neutral, as `fast-forces label` references a
+dataset, so its atomization energy includes an ionization energy or electron
+affinity. A training set without atom frames keeps the unscaled table depths;
+`add_atom_frames` adds them, and a manifest rerun does so on its cached sets.
+
+The cost is anharmonicity. The harmonic spring cannot follow a bond stretched
+0.1 A in a 500 K mode frame, and the written Morse bond adds curvature the fit
+never saw. On H2O2 against GFN2-xTB:
+
+| bond fit | energy RMSE (eV) | force RMSE (eV/A) | mode-frame force RMSE (eV/A) |
 |---|---|---|---|
-| fitting `E0` | 620 | 0.0273 | 0.280 |
-| deriving `E0` at the end | 21 | 0.0269 | 0.258 |
+| nonlinear Morse `(r0, k, D)`, alternated with the linear block | 0.0017 | 0.025 | 0.040 |
+| linear harmonic `k`, measured `r0`, `D` carrying the atomization energy | 0.0111 | 0.096 | 0.154 |
 
-`n_cycles` now defaults to 200 rather than 25. It is a cap the fit exits well
-inside, and it has to be one: an interrupted fit is neither idempotent nor a
-converged residual for `E0` to be read off. Note that a training file records
-the config it was written with and `fit_from_file` prefers that recorded one, so
-files written before this change keep the old budget unless you pass a config.
-
-One thing to watch: `D` now reaches the energy only through the anharmonicity it
-describes, and `D -> infinity` is the harmonic limit. Where the reference data
-does not constrain anharmonicity strongly, `D` runs to its upper bound of 200 eV
-and stops meaning a dissociation energy. The fit is still good -- that is the
-better-fitting row above -- but a bond whose `D` is pinned at 200 will not
-describe dissociation if you pull it apart in MD.
-
-`quickstart/09_starting_point.py` measures all of it.
+The equilibrium, Hessian and torsion frames move by at most 2.5 meV and 0.011
+eV/A; the rest of the difference is on the stretched frames.
+`quickstart/09_starting_point.py` shows a refit returning its own output.

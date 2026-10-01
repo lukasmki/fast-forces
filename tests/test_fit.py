@@ -1,5 +1,7 @@
 """End-to-end fitting against a real reference calculator."""
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -12,6 +14,7 @@ from fastforces import (
     fit_from_file,
     io,
 )
+from fastforces.fit import NOT_FITTED
 from fastforces.topology import enumerate_terms
 from DynamicTopology.forcefield.params import use
 
@@ -45,28 +48,21 @@ def test_fitted_angle_matches_the_reference(h2o2_fit):
     assert theta0[0] == pytest.approx(REFERENCE_THETA, abs=np.radians(3))
 
 
-def test_bond_r0_lands_on_the_true_length_once_the_pairs_are_excluded(h2o2_fit):
-    """`r0` balances whatever nonbonded baseline survives on the bonded pair.
+def test_bond_r0_is_the_measured_length(h2o2_fit):
+    """`r0` is read off the equilibrium frame, averaged within its class.
 
-    H2O2 has graph diameter 3, so `EXCLUSION_DEPTH` removes *every* pair from
-    all three whole-system sums and there is no baseline left to balance: `r0`
-    comes out at the measured bond length.  That is the property being pinned,
-    and it is a property of the exclusions rather than of the fit -- before them
-    `ZBL` put ~20 eV/A of repulsion on each bonded pair against a reference
-    force of zero, and `r0` had to be pre-compressed to pull back against it
-    (a fitted O-H `r0` of 0.70 A against a true 0.97 A).
-
-    A molecule large enough to have surviving pairs would be compressed again,
-    for the same reason; there is no such template in this fixture.
+    It is not fitted: the bond is a harmonic column at that `r0` in the linear
+    solve, so whatever nonbonded baseline survives on a bonded pair is left to
+    the other terms rather than balanced by moving `r0`.
     """
     _, params, path = h2o2_fit
-    equilibrium = io.read_training_set(path).equilibrium
-    positions = equilibrium.get_positions()
-    for row, r0 in zip(
-        params.terms["bond"]["atoms"], params.terms["bond"]["kwargs"]["r0"], strict=True
-    ):
-        true_length = np.linalg.norm(positions[row[0]] - positions[row[1]])
-        assert r0 == pytest.approx(true_length, abs=0.01)
+    positions = io.read_training_set(path).equilibrium.get_positions()
+    atoms = params.terms["bond"]["atoms"]
+    lengths = np.linalg.norm(positions[atoms[:, 0]] - positions[atoms[:, 1]], axis=1)
+    classes = enumerate_terms(io.read_training_set(path).equilibrium).classes["bond"]
+    r0 = params.terms["bond"]["kwargs"]["r0"]
+    for c in np.unique(classes):
+        assert r0[classes == c] == pytest.approx(lengths[classes == c].mean(), abs=1e-12)
 
 
 def test_symmetry_equivalent_bonds_share_parameters(h2o2_fit):
@@ -224,14 +220,9 @@ def test_a_starting_point_is_reported_and_lands_on_every_class(h2o2_fit):
 def test_a_starting_point_round_trips_through_jsonl(tmp_path, h2o2_fit):
     """The realistic path: fit, write the jsonl, start the next fit from it.
 
-    The two fits are scored on what they predict, not parameter by parameter.
     The jsonl round trip perturbs the starting point by ~1e-16 -- the round-off
-    of multiplying by a unit factor and dividing it out again -- and the
-    alternation stops on a relative tolerance, so the shallowest parameters
-    (`bond.c`, which the data barely constrains) land a few tenths of a percent
-    apart.  The force fields those parameters describe are the same one: the
-    RMSEs agree to five or six significant figures, against a difference in the
-    second figure if the starting point had actually changed the answer.
+    of multiplying by a unit factor and dividing it out again -- and the fit is
+    one linear solve, so that is all that separates the two results.
     """
     _, params, path = h2o2_fit
     jsonl = tmp_path / "h2o2.jsonl"
@@ -241,10 +232,8 @@ def test_a_starting_point_round_trips_through_jsonl(tmp_path, h2o2_fit):
 
     from_object = fit_from_file(path, initial=params)
     from_file = fit_from_file(path, initial=str(jsonl))
-    for key in ("energy_rmse_eV", "force_rmse_eV_A"):
-        assert from_file.report[key] == pytest.approx(from_object.report[key], rel=1e-4)
     change, where = _worst_relative_change(from_object, from_file)
-    assert change < 0.05, f"{where} depends on how the starting point was supplied"
+    assert change < 1e-9, f"{where} depends on how the starting point was supplied"
 
 
 def test_a_starting_point_replaces_the_nonbonded_baseline(h2o2_fit):
@@ -276,89 +265,31 @@ def test_a_starting_point_replaces_the_nonbonded_baseline(h2o2_fit):
     assert change > 1e-3
 
 
-def test_a_starting_point_never_makes_the_fit_worse(h2o2_fit):
-    """Refitting from a fitted field descends further; it does not undo anything.
+def test_a_fit_is_idempotent(h2o2_fit):
+    """Refitting from its own output returns the same field.
 
-    Both blocks minimize the same residual and neither is seeded outside its own
-    bounds, so starting from a converged field can only continue downhill.
-
-    "The same residual" is a *weighted combination* of the energy and force
-    blocks, so neither RMSE is separately monotone -- a refit is free to trade a
-    little of one for a little of the other, and does: measured, energy
-    +2.7e-6 eV against force -1.2e-6 eV/A.  The tolerance is therefore relative
-    rather than the absolute 1e-6 it used to be, which was calibrated when the
-    energy RMSE was 0.027 eV and is 0.05% of it now that the fit reaches
-    0.0022 eV.
+    What a starting point supplies -- the equilibrium values, the bond depths
+    and asymptotes, the nonbonded baseline -- is exactly what the fit held
+    fixed the first time, and the force constants come out of the same linear
+    solve.
     """
     _, params, path = h2o2_fit
     again = fit_from_file(path, initial=params)
-    for key in ("force_rmse_eV_A", "energy_rmse_eV"):
-        assert again.report[key] <= params.report[key] * 1.01 + 1e-9, (
-            f"{key} rose from {params.report[key]:.6g} to {again.report[key]:.6g}"
-        )
-
-
-def test_the_fit_converges_inside_its_default_budget(h2o2_fit):
-    """`cycle_tol` must be what ends the fit, not `n_cycles`.
-
-    This is the property that makes everything below meaningful, and it is the
-    one that `E0` used to break: while `E0` was fit alongside `D`, the two
-    traded along a flat direction for hundreds of cycles and the budget was
-    always what stopped the fit.
-    """
-    _, params, _ = h2o2_fit
-    assert params.report["cycles"] < FitConfig.n_cycles
-
-
-def test_a_converged_fit_is_idempotent(h2o2_fit):
-    """Refitting a converged field from its own output returns it.
-
-    "Returns it" means to within `cycle_tol`, which is what the companion test
-    below pins down.  The refit also stops immediately -- there is nothing left
-    for it to do.
-    """
-    _, params, path = h2o2_fit
-    again = fit_from_file(path, initial=params)
-
     change, where = _worst_relative_change(params, again)
-    assert change < 0.05, f"{where} moved {change:.3g} on a refit"
-    # `E0` is derived from the converged mean residual, so it inherits whatever
-    # `cycle_tol` left behind and tracks the bond depths directly: a shift of
-    # `dD` on each of three bonds moves it by `3 dD`.  At the default
-    # `cycle_tol` that is 0.08-0.2 eV on an offset of -235 eV, and it shrinks
-    # with the tolerance (0.079 -> 0.017 -> 0.008 eV at 1e-4, 1e-6, 1e-8), which
-    # is the fixed-point signature `test_the_refit_drift_is_the_stopping_
-    # tolerance` exists to pin.  The bound here is on that residual, not on 0.
-    assert again.e0 == pytest.approx(params.e0, abs=0.3)
-    assert again.report["cycles"] <= 3, "a converged refit should stop immediately"
-    assert again.report["force_rmse_eV_A"] == pytest.approx(
-        params.report["force_rmse_eV_A"], rel=1e-4
-    )
+    assert change < 1e-9, f"{where} moved {change:.3g} on a refit"
+    assert again.e0 == pytest.approx(params.e0, rel=1e-12)
 
 
-def test_the_refit_drift_is_the_stopping_tolerance(h2o2_fit):
-    """What is left of non-idempotency is `cycle_tol`, and shrinks with it.
-
-    This is the test that distinguishes a fixed point being approached from a
-    flat direction being walked along.  Tightening `cycle_tol` by four orders of
-    magnitude shrinks the drift by orders of magnitude for a handful of extra
-    cycles.  Before `E0` was taken out of the fit the same experiment did the
-    opposite: a 64x larger budget moved the parameters *further*, because there
-    was no fixed point to approach.
-    """
-    _, _, path = h2o2_fit
-    drifts = {}
-    for tol in (1e-4, 1e-8):
-        config = FitConfig(cycle_tol=tol, n_cycles=400)
-        converged = fit_from_file(path, config=config)
-        assert converged.report["cycles"] < config.n_cycles, "did not reach cycle_tol"
-        again = fit_from_file(path, config=config, initial=converged)
-        drifts[tol] = _worst_relative_change(converged, again)[0]
-
-    assert drifts[1e-8] < drifts[1e-4] / 10, (
-        f"tightening cycle_tol barely helped ({drifts}); the fit may be walking "
-        "a flat direction again rather than converging"
-    )
+def test_a_supplied_force_constant_does_not_reach_the_result(h2o2_fit):
+    """The linear solve has no starting point, so any `k` in `initial` is inert."""
+    _, params, path = h2o2_fit
+    initial = as_parameters(copy.deepcopy(params.terms))
+    for block in initial.terms.values():
+        if "k" in block["kwargs"]:
+            block["kwargs"] = {**block["kwargs"], "k": 3.0 * block["kwargs"]["k"] + 1.0}
+    again = fit_from_file(path, initial=initial)
+    change, where = _worst_relative_change(params, again)
+    assert change < 1e-9, f"{where} followed the supplied force constants"
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +316,7 @@ def _with_mulliken(path, charges, out):
     """
     data = io.read_training_set(path)
     for frame in data.frames:
-        if frame.info.get("frame_kind") == "fragment":
+        if frame.info.get("frame_kind") in ("fragment", "atom"):
             continue  # another molecule; `fit` never reads its charges
         frame.set_array("mulliken", np.asarray(charges, dtype=float), float)
     io.write_training_set(str(out), data.frames, meta=data.meta)
@@ -515,7 +446,7 @@ def test_the_fixed_charge_fit_is_as_accurate(tmp_path, h2o2_fit):
     charges = np.array([-0.4, -0.4, 0.4, 0.4])
     fixed = _fixed(_with_mulliken(path, charges, tmp_path / "accuracy.xyz"))
     data = io.read_training_set(path)
-    frames = [f for f in data.frames if f.info.get("frame_kind") != "fragment"]
+    frames = [f for f in data.frames if f.info.get("frame_kind") not in NOT_FITTED]
 
     fixed_energy, fixed_force = _score(fixed, frames)
     acks2_energy, acks2_force = _score(acks2_params, frames)
@@ -547,8 +478,11 @@ def test_a_fixed_charge_starting_point_switches_the_fit_over(tmp_path, h2o2_fit)
 
 
 def test_a_diatomic_fits(tmp_path, tblite_factory):
-    """A bond and nothing else: the linear block has no columns at all, which
-    used to reach `lsq_linear` as a shape error rather than as an empty solve.
+    """A bond and nothing else: the linear block is the one harmonic column.
+
+    The force bar is the harmonic bond's, which cannot follow the anharmonicity
+    of the stretched mode frames: measured 0.0156 eV/A, where the nonlinear
+    Morse fit it replaced passed a bar of 0.01.
 
     Hydroxide, so it also runs the whole reference-charge path from plain
     `TBLite` -- which writes no `mulliken` array -- to a `q0` carrying the -1.
@@ -562,7 +496,7 @@ def test_a_diatomic_fits(tmp_path, tblite_factory):
         training_set=str(tmp_path / "hydroxide.xyz"),
     )
     assert set(params.terms) - {"atom", "lennardjones"} == {"bond", "reference"}
-    assert params.report["force_rmse_eV_A"] < 0.01
+    assert params.report["force_rmse_eV_A"] < 0.03
     q0 = params.terms["atom"]["kwargs"]["q0"]
     assert q0.sum() == pytest.approx(-1.0, abs=1e-6)
     assert q0[0] < -0.5
@@ -625,6 +559,12 @@ def test_charges_from_another_charge_state_are_refused(tmp_path, h2o2_fit):
 def test_a_stored_config_translates_the_old_names(stored, expected):
     """A training set written before the split records the old names."""
     assert FitConfig.from_stored({"electrostatics": stored}).electrostatics == expected
+
+
+def test_a_stored_config_drops_the_nonlinear_bond_fields():
+    """A training set written before the bond fit went linear still refits."""
+    stored = {"bond_form": "morse", "n_cycles": 200, "cycle_tol": 1e-4, "seed": 3}
+    assert FitConfig.from_stored(stored) == FitConfig(seed=3)
 
 
 def test_a_new_config_refuses_the_old_names():

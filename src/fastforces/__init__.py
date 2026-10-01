@@ -45,6 +45,7 @@ __all__ = [
     "Parameters",
     "Reaction",
     "ReactionParameters",
+    "add_atom_frames",
     "add_fragment_frames",
     "add_reference_charges",
     "as_parameters",
@@ -132,8 +133,10 @@ def parameterize(
         frames += sampling.torsion_frames(
             equilibrium, calc_factory, dihedrals, step_deg=config.torsion_step_deg
         )
-    # Not fitted to: `fit` reads them for where each bond's stretched limit sits.
+    # Not fitted to: `fit` reads them for where each bond's stretched limit sits,
+    # and for the atomization energy the bond depths carry.
     frames += sampling.fragment_frames(equilibrium, calc_factory)
+    frames += sampling.atom_frames(equilibrium, calc_factory)
 
     meta = {
         "method": str(atoms.info.get("method", type(calc_factory(atoms)).__name__)),
@@ -163,6 +166,22 @@ def add_fragment_frames(path: str, calc_factory) -> int:
     if "smiles" not in equilibrium.info and data.meta.get("smiles"):
         equilibrium.info["smiles"] = data.meta["smiles"]
     frames = sampling.fragment_frames(equilibrium, calc_factory)
+    if frames:
+        io.write_training_set(path, data.frames + frames, meta=data.meta)
+    return len(frames)
+
+
+def add_atom_frames(path: str, calc_factory) -> int:
+    """Label the free-atom frames a training set written before them lacks.
+
+    Returns how many were added.  A set that already has them is left alone;
+    one from before the bond depths were fitted to the atomization energy gets
+    one single point per element, and every other frame in it is kept.
+    """
+    data = io.read_training_set(path)
+    if data.of_kind("atom"):
+        return 0
+    frames = sampling.atom_frames(data.equilibrium, calc_factory)
     if frames:
         io.write_training_set(path, data.frames + frames, meta=data.meta)
     return len(frames)

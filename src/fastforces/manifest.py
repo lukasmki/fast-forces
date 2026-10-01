@@ -547,8 +547,11 @@ def fit_molecule(manifest: Manifest, entry: Entry, calc_factory, method: str):
                     f"{entry.label}: the training set {training} was computed with "
                     f"{cached}, not the manifest's {method}; delete it to regenerate"
                 )
-            # A set from before the asymptote was fitted has no fragments.
+            # A set from before the asymptote was fitted has no fragments, and
+            # one from before the depths carried the atomization energy has no
+            # free atoms.
             ff.add_fragment_frames(str(training), calc_factory)
+            ff.add_atom_frames(str(training), calc_factory)
             # A set sampled before this source was asked for lacks its charges;
             # only the equilibrium frame is evaluated again.
             ff.add_reference_charges(

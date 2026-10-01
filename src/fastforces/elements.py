@@ -237,6 +237,48 @@ def acks2_defaults(numbers: np.ndarray) -> dict[str, np.ndarray]:
     return params
 
 
+# Number of unpaired electrons (2S = n_alpha - n_beta) in the ground state
+# of the neutral atoms, i.e. Hund's rule applied to the atomic configuration.
+ATOM_SPIN: dict[str, int] = {
+    "H": 1,
+    "He": 0,
+    "Li": 1,
+    "Be": 0,
+    "B": 1,
+    "C": 2,
+    "N": 3,
+    "O": 2,
+    "F": 1,
+    "Ne": 0,
+    "Na": 1,
+    "Mg": 0,
+    "Al": 1,
+    "Si": 2,
+    "P": 3,
+    "S": 2,
+    "Cl": 1,
+    "Ar": 0,
+    "K": 1,
+    "Ca": 0,
+    "Sc": 1,
+    "Ti": 2,
+    "V": 3,
+    "Cr": 6,
+    "Mn": 5,
+    "Fe": 4,
+    "Co": 3,
+    "Ni": 2,
+    "Cu": 1,
+    "Zn": 0,
+    "Ga": 1,
+    "Ge": 2,
+    "As": 3,
+    "Se": 2,
+    "Br": 1,
+    "Kr": 0,
+}
+
+
 def lj_defaults(numbers: np.ndarray) -> dict[str, np.ndarray]:
     """Per-atom Lennard-Jones parameters: sigma in Angstrom, eps in eV."""
     numbers = np.asarray(numbers, dtype=int)
@@ -251,8 +293,11 @@ def morse_well_depth(z1: np.ndarray, z2: np.ndarray) -> np.ndarray:
 
     Tabulated pairs win; otherwise the Pauling-style geometric mean of the two
     homonuclear values; otherwise `FALLBACK_D`.  These are single-bond values,
-    so a double or triple bond starts out too shallow -- the nonlinear refine in
-    `fit` is what corrects that, seeded from here.
+    so a double or triple bond is too shallow against a single one.  `fit`
+    scales them all by one factor so the bonds carry the molecule's atomization
+    energy (`fit._depth_scale`), which fixes their sum and keeps these ratios;
+    where each bond ends up when it breaks is set by the asymptote `h`, solved
+    against the fragments on top of whatever `D` is.
     """
     z1 = np.atleast_1d(np.asarray(z1, dtype=int))
     z2 = np.atleast_1d(np.asarray(z2, dtype=int))

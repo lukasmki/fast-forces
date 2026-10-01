@@ -130,19 +130,18 @@ for (i, j), length, r0 in zip(bonds["atoms"], lengths, bonds["kwargs"]["r0"]):
     print(f"{label:10s} {length:11.4f} {r0:11.4f}")
 
 print(f"""
-`r0` is an effective parameter, not a measurement -- it balances whatever
-nonbonded baseline survives on the pair it connects.  Here nothing survives, so
-there is nothing to balance and `r0` lands on the bond length.
+`r0` is the measured bond length, averaged within its class -- the fit holds it
+there and solves only for `k`.  Here nothing of the nonbonded baseline survives
+on a bonded pair, so a spring sitting exactly at its own `r0` is the right
+answer at the minimum.
 
-Without the exclusions it would not.  ZBL alone puts {zbl_energy:+.1f} eV and up to
+Without the exclusions it would not be.  ZBL alone puts {zbl_energy:+.1f} eV and up to
 {abs(zbl_forces).max():.1f} eV/A of pure repulsion on this molecule at its own geometry, against
-a reference force of zero, and a Morse bond sitting exactly at its own `r0`
-exerts no force at all -- so the fit would have to compress `r0` until the bond
-pulled hard enough to cancel it.  Fitted that way, the same C-H bond came out at
-0.0746 nm against a true 0.1089 nm: an effective parameter that no longer looked
-like a bond length at all.
+a reference force of zero, and a bond at its own `r0` exerts no force at all to
+cancel it.  An earlier version of the fit let `r0` move to balance that, and the
+same C-H bond came out at 0.0746 nm against a true 0.1089 nm: an effective
+parameter that no longer looked like a bond length at all.
 
 A molecule large enough to have pairs more than three bonds apart is back in
-that situation for those pairs, and so is anything intermolecular.  The
-exclusions do not remove the bargain; they remove it from within a small
-molecule.""")
+that situation for those pairs, and so is anything intermolecular.  With `r0`
+fixed, what survives there is left to the other terms and to the residual.""")

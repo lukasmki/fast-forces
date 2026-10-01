@@ -85,10 +85,9 @@ for name in results:
 
 print("""
 EMT has no business describing a water molecule, and the energy residual says
-so -- four times the xTB fits, and a stretch penalty four times too steep.  Its
+so -- over ten times the xTB fits, and a stretch penalty three times too
+steep.  Its
 force residual does not, because EMT's forces are simply small; `fit_report()`
 gives both blocks for exactly this reason.  The two xTB fits, meanwhile, agree
 with each other to well within their own residuals, which is what a working
-parameterization of two similar Hamiltonians should look like.
-
-The fitted O-H r0 near 0.48 A is not a bond length -- see example 06.""")
+parameterization of two similar Hamiltonians should look like.""")
