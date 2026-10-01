@@ -45,4 +45,4 @@ dev = [
 markers = ["slow: end-to-end fits that call a reference calculator"]
 
 [tool.uv.sources]
-dynamictopology = { path = "../DynamicTopology", editable = true }
+dynamictopology = { git = "https://github.com/lukasmki/DynamicTopology.git", branch = "main" }

@@ -2,25 +2,33 @@ Installation
 ============
 
 fast-forces needs Python 3.13 or newer and is managed with
-`uv <https://docs.astral.sh/uv/>`_. It depends on DynamicTopology as an
-editable path dependency (``../DynamicTopology``), so check the two repositories out
-side by side:
-
-.. code-block:: text
-
-   Projects/
-   ├── DynamicTopology/     # the force field and reactive MD
-   └── fast-forces/     # this package
-
-Then, from ``fast-forces/``:
+`uv <https://docs.astral.sh/uv/>`_. It depends on DynamicTopology, which uv
+fetches from `GitHub <https://github.com/lukasmki/DynamicTopology>`_ at the
+commit pinned in ``uv.lock``, so no separate checkout is needed. From
+``fast-forces/``:
 
 .. code-block:: sh
 
    uv sync                  # runtime dependencies and the dev group
    uv run fast-forces --help
 
-Because DynamicTopology is installed editable, changes to it are picked up
-without reinstalling.
+To move to the latest DynamicTopology ``main``:
+
+.. code-block:: sh
+
+   uv lock --upgrade-package dynamictopology
+   uv sync
+
+Developing against a local DynamicTopology
+------------------------------------------
+
+To pick up uncommitted changes to a DynamicTopology checkout, install it
+editable over the pinned copy and skip the sync that would undo it:
+
+.. code-block:: sh
+
+   uv pip install -e ../DynamicTopology
+   uv run --no-sync fast-forces --help
 
 Optional: OpenMM export
 -----------------------
