@@ -25,7 +25,7 @@ file, fitted by `fast-forces fit-manifest Water.json` or `ff.manifest.run("Water
 import numpy as np
 from ase import Atoms
 
-from . import elements, io, sampling, topology
+from . import elements, io, parallel, sampling, topology
 from .calculator import FastForces, evaluate
 from .fit import FitConfig, as_parameters, fit
 from .params import Parameters
@@ -36,6 +36,10 @@ from .coupling import Coupling
 from .evb import EVB
 from .reaction import Reaction, ReactionParameters
 from .reaction import parameterize as parameterize_reaction
+
+# Before anything can run a reference calculation in this process; see
+# `parallel` for why it has to be this early.
+parallel.configure_from_environment()
 
 __all__ = [
     "Coupling",
@@ -59,6 +63,7 @@ __all__ = [
     "fit_from_file",
     "io",
     "manifest",
+    "parallel",
     "parameterize",
     "parameterize_reaction",
     "perceive",
@@ -110,7 +115,9 @@ def parameterize(
     """
     config = config or FitConfig()
 
-    equilibrium = sampling.optimize(atoms, calc_factory, fmax=config.fmax)
+    equilibrium = sampling.optimize(
+        atoms, calc_factory, fmax=config.fmax, prerelax=config.prerelax
+    )
     _, _, _, hessian_frames = sampling.hessian(
         equilibrium, calc_factory, delta=config.hessian_delta
     )
@@ -199,14 +206,23 @@ def add_reference_charges(path: str, calc_factory, source: str) -> bool:
     Merz-Kollman fit to its density (`charges.esp_charges`).  Every other frame
     is kept as it was.  Returns whether the file was rewritten.
     """
-    from .charges import esp_charges
-
     if source == "neutral":
         return False
     data = io.read_training_set(path)
     equilibrium = data.equilibrium
     if source in equilibrium.arrays:
         return False
+    # A reference calculation, so it runs in a worker when `parallel` has any.
+    q = parallel.call(_reference_charges, equilibrium, calc_factory, source)
+    equilibrium.set_array(source, np.asarray(q, dtype=float), float)
+    io.write_training_set(path, data.frames, meta=data.meta)
+    return True
+
+
+def _reference_charges(equilibrium, calc_factory, source: str) -> np.ndarray:
+    """The `source` charges of `equilibrium`; see `add_reference_charges`."""
+    from .charges import esp_charges
+
     if source == "esp":
         q = esp_charges(equilibrium, calc_factory(equilibrium))
     elif source == "mulliken":
@@ -226,9 +242,7 @@ def add_reference_charges(path: str, calc_factory, source: str) -> bool:
             )
     else:
         raise ValueError(f"unknown reference-charge source {source!r}")
-    equilibrium.set_array(source, np.asarray(q, dtype=float), float)
-    io.write_training_set(path, data.frames, meta=data.meta)
-    return True
+    return np.asarray(q, dtype=float)
 
 
 def fit_from_file(

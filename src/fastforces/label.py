@@ -28,6 +28,7 @@ from ase.calculators.singlepoint import SinglePointCalculator
 
 from pyscf import dft, gto, lib
 
+from . import parallel
 from .calculators.pyscf import ase_to_pyscf
 from .elements import ATOM_SPIN
 from .io import read_frames, write_frames
@@ -150,8 +151,17 @@ def main(
     verbose: Annotated[
         int, typer.Option("-v", "--verbose", help="PySCF verbosity level.")
     ] = 0,
+    workers: Annotated[
+        int | None,
+        typer.Option(
+            help="structures to label at once, each in its own process; see "
+            "`fastforces.parallel`. Each then runs --nthreads threads.",
+        ),
+    ] = None,
 ) -> None:
-    if nthreads is not None:
+    if workers is not None:
+        parallel.configure(workers=workers, threads=nthreads)
+    if nthreads is not None and not parallel.active():
         lib.num_threads(nthreads)
 
     atom_cache: dict[str, float] = {}
@@ -163,10 +173,35 @@ def main(
     # Write incrementally so a crash halfway through does not lose everything.
     output.unlink(missing_ok=True)
 
-    for i, at in enumerate(atoms):
-        mol = ase_to_pyscf(at, basis, charge=charge, spin=spin, verbose=verbose)
+    # Every SCF here is independent, so with `parallel` workers configured the
+    # missing free atoms run together, then the structures a batch of one per
+    # worker at a time -- still written as each batch lands.
+    missing = sorted(
+        {s for at in atoms for s in at.get_chemical_symbols()} - set(atom_cache)
+    )
+    for symbol, energy in zip(
+        missing,
+        parallel.map(
+            lambda symbol: atom_energy(
+                symbol, basis, {}, grid_level, nlc_grid_level, density_fit, verbose
+            ),
+            missing,
+        ),
+    ):
+        atom_cache[symbol] = energy
+    if missing and atom_cache_path is not None:
+        atom_cache_path.write_text(json.dumps(atom_cache, indent=2))
 
-        e_mol = _run_scf(mol, grid_level, nlc_grid_level, density_fit)
+    def molecule_energy(at: Atoms) -> float:
+        mol = ase_to_pyscf(at, basis, charge=charge, spin=spin, verbose=verbose)
+        return _run_scf(mol, grid_level, nlc_grid_level, density_fit)
+
+    batch = parallel.workers()
+    energies: list[float] = []
+    for i, at in enumerate(atoms):
+        if i % batch == 0:
+            energies = parallel.map(molecule_energy, atoms[i : i + batch])
+        e_mol = energies[i % batch]
 
         e_atoms = sum(
             atom_energy(

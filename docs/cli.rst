@@ -69,6 +69,13 @@ Fits one molecule against tblite, running the full
 
    ``.jsonl`` force field to start from, instead of the element table.
 
+.. option:: --workers <int>, --threads <int>
+
+   Run the reference calculations side by side, ``--workers`` processes of
+   ``--threads`` OpenMP/BLAS threads each (defaults ``$FASTFORCES_WORKERS`` and
+   ``$FASTFORCES_THREADS``, else 1 and 1: serial). The training set is the
+   serial one; see :mod:`fastforces.parallel`.
+
 .. _cli-fm:
 
 fast-forces fit-manifest
@@ -78,7 +85,7 @@ fast-forces fit-manifest
 
 .. code-block:: sh
 
-   fast-forces fit-manifest MANIFEST [--dry-run]
+   fast-forces fit-manifest MANIFEST [--dry-run] [--workers N --threads T]
 
 Fits every molecule and then every reaction in a manifest, and writes each
 entry to its ``path``. See :doc:`manifest` for the file format. Exits 2 if the
@@ -87,6 +94,17 @@ manifest is invalid and 1 if any entry failed.
 .. option:: --dry-run
 
    Validate the manifest and print what would be fitted, without fitting.
+
+.. option:: --workers <int>, --threads <int>
+
+   Run the reference calculations side by side, ``--workers`` processes of
+   ``--threads`` OpenMP/BLAS threads each (defaults ``$FASTFORCES_WORKERS`` and
+   ``$FASTFORCES_THREADS``, else 1 and 1: serial). Molecules are fitted side by
+   side, then reactions, the node divided between them; the training sets are
+   the serial ones; see :mod:`fastforces.parallel`.
+
+   On a Perlmutter CPU node, ``--workers 32 --threads 4``; see
+   ``examples/fit-manifest.slurm``.
 
 .. _cli-refit:
 
@@ -251,7 +269,12 @@ coupling amplitudes against. Output is an extxyz with the energies in eV.
 
 .. option:: --nthreads <int>
 
-   PySCF thread count.
+   PySCF thread count -- per worker, with ``--workers``.
+
+.. option:: --workers <int>
+
+   Label this many structures at once, each in its own process; see
+   :mod:`fastforces.parallel`.
 
 .. option:: -v, --verbose <int>
 

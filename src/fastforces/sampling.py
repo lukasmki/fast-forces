@@ -14,6 +14,8 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from ase.constraints import FixInternals
 from ase.optimize import BFGS
 
+from . import parallel
+
 # hbar * 1e10 / sqrt(e * amu): converts sqrt(eV / (Angstrom^2 amu)) to eV, the
 # same constant `ase.vibrations` uses.
 VIB_ENERGY_SCALE = units._hbar * 1e10 / (units._e * units._amu) ** 0.5
@@ -31,6 +33,20 @@ TRIVIAL_MODE_ENERGY = 0.010
 # stops the tail of the Gaussian from producing a dissociated geometry.
 MAX_DISPLACEMENT = 0.35
 
+# The pre-relaxation `optimize` runs with `prerelax`: loose, since it only has to
+# put the reference's own relaxation in the right well and near its bottom.
+PRERELAX_FMAX = 0.01
+# Floor on the internal curvatures of the pre-relaxation's Hessian, in
+# eV/Angstrom^2, before it seeds the reference's BFGS: a methyl rotor can come
+# out near zero or slightly negative.
+PRERELAX_CURVATURE_FLOOR = 0.05
+# What the seeded Hessian puts on translations and rotations: ASE BFGS's own
+# default for every coordinate.  They have no curvature at all, but a DFT
+# integration grid is not rotationally invariant, so the reference's forces
+# carry a small spurious torque; at a soft curvature BFGS answers it with
+# full-length rotations, and the relaxation never converges.
+RIGID_CURVATURE = 70.0
+
 
 def label(atoms: Atoms, calc_factory, kind: str, strict: bool = True) -> Atoms | None:
     """Evaluate `atoms` with a fresh calculator and freeze the result onto it.
@@ -40,7 +56,12 @@ def label(atoms: Atoms, calc_factory, kind: str, strict: bool = True) -> Atoms |
     run.  Sampling deliberately visits geometries near the edge of what a
     reference method can handle, so losing a few of them is normal; losing the
     equilibrium geometry or the Hessian is not, and those callers stay strict.
+
+    With `parallel` workers configured this runs in one of them, so that the
+    parent never runs the reference itself; see that module for why.
     """
+    if parallel.active():
+        return parallel.call(label, atoms, calc_factory, kind, strict)
     frame = atoms.copy()
     frame.calc = calc_factory(frame)
     try:
@@ -75,6 +96,7 @@ def optimize(
     fmax: float = 1e-3,
     steps: int = 500,
     kind: str = "equilibrium",
+    prerelax: str | None = None,
 ) -> Atoms:
     """Relax to the equilibrium geometry every equilibrium value is read from.
 
@@ -86,13 +108,88 @@ def optimize(
     parent molecule has to pass one.  `TrainingSet.equilibrium` is the *first*
     frame tagged `"equilibrium"`, so a dissociation fragment left at the default
     could shadow the molecule and quietly corrupt every fitted term.
+
+    `prerelax` names a tblite method (`"GFN2-xTB"`) to relax with first; see
+    `_prerelax`.  The reference relaxation then starts from that geometry with
+    that method's Hessian as BFGS's first guess, and converges to the same
+    `fmax` -- the same minimum, to within it, in far fewer reference steps.
+
+    One chain of dependent steps, so with `parallel` workers configured it is a
+    single task holding every thread.
     """
+    if parallel.active():
+        return parallel.call(
+            optimize, atoms, calc_factory, fmax, steps, kind, prerelax
+        )
     work = atoms.copy()
+    guess = None
+    if prerelax is not None:
+        work, guess = _prerelax(work, prerelax)
     work.calc = calc_factory(work)
-    BFGS(work, logfile=None).run(fmax=fmax, steps=steps)
+    optimizer = BFGS(work, logfile=None)
+    if guess is not None:
+        optimizer.H0 = guess
+    optimizer.run(fmax=fmax, steps=steps)
     out = atoms.copy()
     out.set_positions(work.get_positions())
     return label(out, calc_factory, kind)
+
+
+def _prerelax(atoms: Atoms, method: str, delta: float = 0.005):
+    """Relax `atoms` with tblite's `method`; return it and a Hessian to seed BFGS.
+
+    The Hessian is central-differenced at the relaxed geometry, `6N` tblite
+    gradients, and its curvatures are raised to `PRERELAX_CURVATURE_FLOOR` so
+    that it is positive definite.  BFGS's default first guess is a uniform 70
+    eV/Angstrom^2 on every coordinate, which is right for no mode of a real
+    molecule; at the reference's tight `fmax` the steps it spends learning the
+    soft ones are most of the relaxation.
+
+    Only a starting point: the reference relaxation still converges to its own
+    `fmax`.  What a different method can change is which well that relaxation
+    ends in -- a flexible molecule whose input geometry sits between two
+    conformers can be carried to the other one -- which is why it is opt-in.
+    """
+    from tblite.ase import TBLite
+
+    work = atoms.copy()
+    work.calc = TBLite(method=method, verbosity=0)
+    BFGS(work, logfile=None).run(fmax=PRERELAX_FMAX, steps=1000)
+    pos = work.get_positions()
+    n = 3 * len(work)
+    H = np.empty((n, n))
+    for k in range(n):
+        columns = []
+        for sign in (1.0, -1.0):
+            shifted = pos.copy().ravel()
+            shifted[k] += sign * delta
+            work.set_positions(shifted.reshape(-1, 3))
+            columns.append(-work.get_forces().ravel())
+        H[:, k] = (columns[0] - columns[1]) / (2 * delta)
+    work.set_positions(pos)
+    rigid = _rigid_modes(pos)
+    internal = np.eye(n) - rigid @ rigid.T
+    H = internal @ (0.5 * (H + H.T)) @ internal
+    curvature, modes = np.linalg.eigh(H)
+    curvature = np.maximum(np.abs(curvature), PRERELAX_CURVATURE_FLOOR)
+    # The rigid modes are eigenvectors of `H` at zero, so they now carry the
+    # floor; lift them to `RIGID_CURVATURE`.
+    seed = (modes * curvature) @ modes.T
+    seed += (RIGID_CURVATURE - PRERELAX_CURVATURE_FLOOR) * rigid @ rigid.T
+    relaxed = atoms.copy()
+    relaxed.set_positions(pos)
+    return relaxed, seed
+
+
+def _rigid_modes(pos: np.ndarray) -> np.ndarray:
+    """Orthonormal translations and rotations of `pos`, `(3N, 6)` or 5 if linear."""
+    centred = pos - pos.mean(axis=0)
+    basis = []
+    for axis in np.eye(3):
+        basis.append(np.tile(axis, len(pos)))
+        basis.append(np.cross(axis, centred).ravel())
+    u, sigma, _ = np.linalg.svd(np.array(basis).T, full_matrices=False)
+    return u[:, sigma > 1e-8 * sigma.max()]
 
 
 def hessian(
@@ -111,25 +208,32 @@ def hessian(
     n = len(atoms)
     pos = atoms.get_positions()
     h = np.zeros((3 * n, 3 * n))
-    frames: list[Atoms] = []
 
+    # Every displacement is its own single point, so all 6N are labelled at once
+    # when `parallel` workers are configured, and in this order either way.
+    displaced: list[Atoms] = []
     for i in range(n):
         for axis in range(3):
-            forces = []
             for sign in (+1, -1):
                 shifted = atoms.copy()
                 shifted.positions = pos.copy()
                 shifted.positions[i, axis] += sign * delta
-                frame = label(shifted, calc_factory, "hessian")
-                # Tagged so `io.rebuild_hessian` can reconstruct H from the file
-                # alone -- the Hessian never has to be serialized separately.
-                frame.info["hessian_column"] = 3 * i + axis
-                frame.info["hessian_sign"] = sign
-                frame.info["hessian_delta"] = delta
-                frames.append(frame)
-                forces.append(frame.get_forces())
-            # H = -dF/dR
-            h[3 * i + axis] = -(forces[0] - forces[1]).ravel() / (2 * delta)
+                displaced.append(shifted)
+    frames: list[Atoms] = parallel.map(
+        lambda shifted: label(shifted, calc_factory, "hessian"), displaced
+    )
+
+    for k, frame in enumerate(frames):
+        column, sign = divmod(k, 2)
+        # Tagged so `io.rebuild_hessian` can reconstruct H from the file
+        # alone -- the Hessian never has to be serialized separately.
+        frame.info["hessian_column"] = column
+        frame.info["hessian_sign"] = 1 - 2 * sign
+        frame.info["hessian_delta"] = delta
+    for column in range(3 * n):
+        plus, minus = frames[2 * column], frames[2 * column + 1]
+        # H = -dF/dR
+        h[column] = -(plus.get_forces() - minus.get_forces()).ravel() / (2 * delta)
 
     h = 0.5 * (h + h.T)
 
@@ -177,8 +281,8 @@ def normal_mode_frames(
 
     kt = units.kB * temperature
     pos = atoms.get_positions()
-    frames = []
-    while len(frames) < n_frames:
+
+    def draw() -> Atoms:
         q = rng.normal(scale=np.sqrt(kt) / omega)
         displacement = ((vectors @ q) * inv_sqrt_m).reshape(-1, 3)
         largest = np.linalg.norm(displacement, axis=1).max()
@@ -186,9 +290,18 @@ def normal_mode_frames(
             displacement *= MAX_DISPLACEMENT / largest
         shifted = atoms.copy()
         shifted.positions = pos + displacement
-        frame = label(shifted, calc_factory, "mode", strict=False)
-        if frame is not None:
-            frames.append(frame)
+        return shifted
+
+    # Drawn as many at a time as are still missing, and kept in draw order: the
+    # frames are the first `n_frames` that label, the same ones a loop drawing
+    # and labelling one at a time keeps, and no more are drawn than it draws.
+    frames = []
+    while len(frames) < n_frames:
+        batch = [draw() for _ in range(n_frames - len(frames))]
+        labelled = parallel.map(
+            lambda shifted: label(shifted, calc_factory, "mode", strict=False), batch
+        )
+        frames += [frame for frame in labelled if frame is not None]
     return frames
 
 
@@ -222,16 +335,18 @@ def conformer_frames(
             for c in smiles2conformers(smiles, n_conformers, randomSeed=seed)
         ]
 
-    frames = []
+    shifted = []
     for geometry in geometries:
         if geometry.shape != (len(atoms), 3):
             continue  # a different atom ordering is not usable as a frame here
-        shifted = atoms.copy()
-        shifted.set_positions(geometry)
-        frame = label(shifted, calc_factory, "conformer", strict=False)
-        if frame is not None:
-            frames.append(frame)
-    return frames
+        conformer = atoms.copy()
+        conformer.set_positions(geometry)
+        shifted.append(conformer)
+    labelled = parallel.map(
+        lambda conformer: label(conformer, calc_factory, "conformer", strict=False),
+        shifted,
+    )
+    return [frame for frame in labelled if frame is not None]
 
 
 def torsion_frames(
@@ -250,28 +365,31 @@ def torsion_frames(
     coefficients identifiable, so leaving this out quietly degrades every
     dihedral term rather than failing.
     """
-    frames = []
-    for a, b, c, d in dihedrals:
-        for angle in np.arange(0.0, 360.0, step_deg):
-            work = atoms.copy()
-            try:
-                work.set_dihedral(a, b, c, d, float(angle))
-            except Exception:
-                continue  # ring closure: the dihedral cannot be set independently
-            work.set_constraint(
-                FixInternals(dihedrals_deg=[[float(angle), [a, b, c, d]]])
-            )
-            work.calc = calc_factory(work)
-            try:
-                BFGS(work, logfile=None).run(fmax=fmax, steps=steps)
-            except Exception:
-                continue
-            relaxed = atoms.copy()
-            relaxed.set_positions(work.get_positions())
-            frame = label(relaxed, calc_factory, "torsion", strict=False)
-            if frame is not None:
-                frames.append(frame)
-    return frames
+    def scan_point(point) -> Atoms | None:
+        (a, b, c, d), angle = point
+        work = atoms.copy()
+        try:
+            work.set_dihedral(a, b, c, d, float(angle))
+        except Exception:
+            return None  # ring closure: the dihedral cannot be set independently
+        work.set_constraint(FixInternals(dihedrals_deg=[[float(angle), [a, b, c, d]]]))
+        work.calc = calc_factory(work)
+        try:
+            BFGS(work, logfile=None).run(fmax=fmax, steps=steps)
+        except Exception:
+            return None
+        relaxed = atoms.copy()
+        relaxed.set_positions(work.get_positions())
+        return label(relaxed, calc_factory, "torsion", strict=False)
+
+    # Every point of every scan relaxes from `atoms` on its own, not from its
+    # neighbour, so the whole set is independent and runs as one batch.
+    points = [
+        (dihedral, angle)
+        for dihedral in dihedrals
+        for angle in np.arange(0.0, 360.0, step_deg)
+    ]
+    return [frame for frame in parallel.map(scan_point, points) if frame is not None]
 
 
 def rotatable_dihedrals(atoms: Atoms) -> list[tuple[int, int, int, int]]:
@@ -378,7 +496,7 @@ def fragment_frames(equilibrium: Atoms, calc_factory, topology=None) -> list[Ato
         return []
     if topology is None:
         topology = enumerate_terms(equilibrium, perceive(equilibrium))
-    frames = []
+    pairs = []
     for bond in bridge_bonds(topology).values():
         pair = []
         for indices, spin in _cut_fragments(smiles, equilibrium, topology.graph, bond):
@@ -390,7 +508,15 @@ def fragment_frames(equilibrium: Atoms, calc_factory, topology=None) -> list[Ato
             fragment.info.update(
                 spin=int(spin), fragment_bond=list(bond), fragment_atoms=list(indices)
             )
-            pair.append(label(fragment, calc_factory, "fragment", strict=False))
+            pair.append(fragment)
+        pairs.append(pair)
+    labelled = parallel.map(
+        lambda fragment: label(fragment, calc_factory, "fragment", strict=False),
+        [fragment for pair in pairs for fragment in pair],
+    )
+    frames = []
+    for pair in pairs:
+        pair, labelled = labelled[: len(pair)], labelled[len(pair) :]
         if all(frame is not None for frame in pair):
             frames += pair
     return frames
@@ -414,14 +540,16 @@ def atom_frames(equilibrium: Atoms, calc_factory) -> list[Atoms]:
 
     if len(equilibrium) < 2:
         return []
-    frames = []
+    free = []
     for symbol in sorted(set(equilibrium.get_chemical_symbols())):
         if symbol not in ATOM_SPIN:
             return []
         atom = Atoms(symbol, positions=[[0.0, 0.0, 0.0]])
         atom.info["spin"] = ATOM_SPIN[symbol]
-        frame = label(atom, calc_factory, "atom", strict=False)
-        if frame is None:
-            return []
-        frames.append(frame)
+        free.append(atom)
+    frames = parallel.map(
+        lambda atom: label(atom, calc_factory, "atom", strict=False), free
+    )
+    if any(frame is None for frame in frames):
+        return []
     return frames

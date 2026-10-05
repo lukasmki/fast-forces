@@ -570,3 +570,36 @@ def test_a_stored_config_drops_the_nonlinear_bond_fields():
 def test_a_new_config_refuses_the_old_names():
     with pytest.raises(ValueError, match="old name for the inference method"):
         FitConfig(electrostatics="fixed")
+
+
+def test_a_prerelaxed_optimization_reaches_the_same_minimum():
+    """`prerelax` changes how the reference relaxes, not where it ends up.
+
+    GFN1-xTB stands in for the reference and GFN2-xTB pre-relaxes: two methods
+    whose minima differ, as a cheap method's and DFT's do.  Both runs converge
+    to the reference's own `fmax`, so they land on one minimum to within it --
+    and the seeded one gets there in fewer reference gradients.
+    """
+    tblite = pytest.importorskip("tblite.ase")
+    from fastforces import build, sampling
+
+    calls = []
+
+    class Counting(tblite.TBLite):
+        def calculate(self, *args, **kwargs):
+            calls.append(1)
+            super().calculate(*args, **kwargs)
+
+    reference = lambda atoms: Counting(method="GFN1-xTB", verbosity=0)
+    atoms = build("CCO")
+    plain = sampling.optimize(atoms, reference, fmax=1e-3)
+    n_plain, calls[:] = len(calls), []
+    seeded = sampling.optimize(atoms, reference, fmax=1e-3, prerelax="GFN2-xTB")
+    n_seeded = len(calls)
+
+    for relaxed in (plain, seeded):
+        assert np.abs(relaxed.get_forces()).max() < 1e-3
+    assert seeded.get_potential_energy() == pytest.approx(
+        plain.get_potential_energy(), abs=1e-6
+    )
+    assert n_seeded < n_plain, (n_seeded, n_plain)

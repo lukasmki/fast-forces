@@ -94,7 +94,15 @@ field                  default        meaning
 ``regularization``     ``1e-3``       Tikhonov penalty, scaled per column
 ``seed``               ``0``          sampling seed
 ``electrostatics``     ``"neutral"``  ``"mulliken"``, ``"esp"`` or ``"neutral"`` (see below)
+``prerelax``           ``None``       tblite method to relax with first (see below)
 =====================  =============  =============================================
+
+``prerelax`` (e.g. ``"GFN2-xTB"``) relaxes the molecule with tblite before the
+reference does, and starts the reference's BFGS from that geometry with
+tblite's Hessian as its first guess. The reference still converges to its own
+``fmax``, so the minimum is the same to within it, in a fraction of the
+reference steps (ethanol under B3LYP: 63 to 11). It is off by default because a
+different method can carry a flexible molecule into another conformer's well.
 
 ``electrostatics`` picks where each atom's reference charge comes from:
 

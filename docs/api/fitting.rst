@@ -22,6 +22,11 @@ Reference sampling
 
 .. automodule:: fastforces.sampling
 
+Running the reference in parallel
+---------------------------------
+
+.. automodule:: fastforces.parallel
+
 Training set
 ------------
 

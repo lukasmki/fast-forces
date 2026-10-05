@@ -121,7 +121,10 @@ backend's constructor:
 ``{"name": "pyscf", "xc": "...", "basis": "...", "pcm": "IEF-PCM", "pcm_eps": 78.36}``
    PySCF DFT (ωB97X-V/cc-pVTZ by default). ``pcm`` adds implicit solvent,
    which is the wrong reference for a dataset meant to run in explicit solvent;
-   see the ``PySCFCalculator`` docstring.
+   see the ``PySCFCalculator`` docstring. ``conv_tol`` sets the SCF tolerance,
+   ``1e-9`` Hartree by default; it was ``1e-6``, at which the forces are as
+   noisy as the ``1e-3`` eV/Å a relaxation converges to, so training sets
+   labelled before and after the change differ in their last digits.
 
 Charge and spin come from each geometry, so one manifest can fit cations,
 anions and radicals against the same method.

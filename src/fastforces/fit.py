@@ -156,6 +156,11 @@ class FitConfig:
     # baseline the bonded terms are fit against -- so a field refit with another
     # source is a different force field rather than a reparametrized one.
     electrostatics: str = "neutral"
+    # A tblite method (`"GFN2-xTB"`) to relax the equilibrium with before the
+    # reference does, seeding the reference's BFGS with its geometry and
+    # Hessian; `None` relaxes with the reference alone.  See
+    # `sampling.optimize`.
+    prerelax: str | None = None
 
     def __post_init__(self):
         if self.electrostatics not in CHARGE_SOURCES:

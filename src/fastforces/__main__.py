@@ -2,6 +2,7 @@
 
     fast-forces fit CC#N -o acetonitrile.jsonl
     fast-forces fit-manifest examples/hydrogen-combustion/hydrogen-combustion.json --dry-run
+    fast-forces fit-manifest Water.json --workers 32 --threads 4   # a CPU node
     fast-forces refit examples/hydrogen-combustion/hydrogen-combustion.json --force-constants
     fast-forces label -i rxn.xyz -o rxn.xyz        # reference energies (PySCF)
     fast-forces import-qforce -i qforce.xml -o mol.jsonl
@@ -27,6 +28,28 @@ def _help(doc: str | None) -> str:
     """
     paragraphs = inspect.cleandoc(doc or "").split("\n\n")
     return "\n\n".join("\b\n" + p if p.startswith(" ") else p for p in paragraphs)
+
+
+# `--workers` / `--threads`, shared by every command that runs a reference.
+Workers = Annotated[
+    int | None,
+    typer.Option(
+        help="reference calculations to run at once, each in its own process "
+        "(default: $FASTFORCES_WORKERS, else 1). See `fastforces.parallel`.",
+    ),
+]
+Threads = Annotated[
+    int | None,
+    typer.Option(
+        help="OpenMP/BLAS threads per worker (default: $FASTFORCES_THREADS, else 1)",
+    ),
+]
+
+
+def _parallel(workers: int | None, threads: int | None) -> None:
+    from . import parallel
+
+    parallel.configure(workers=workers, threads=threads)
 
 
 app = typer.Typer(
@@ -56,9 +79,13 @@ def fit_smiles(
             help="jsonl force field to start the fit from, instead of the element table"
         ),
     ] = None,
+    workers: Workers = None,
+    threads: Threads = None,
 ) -> None:
     """Fit one molecule from a SMILES string against tblite."""
     from .calculators.tblite import TBLiteCalculator
+
+    _parallel(workers, threads)
 
     atoms = build(smiles)
     config = FitConfig(temperature=temperature, n_mode_frames=mode_frames)
@@ -92,9 +119,13 @@ def fit_manifest(
             "--dry-run", help="validate the manifest and print what would be fitted"
         ),
     ] = False,
+    workers: Workers = None,
+    threads: Threads = None,
 ) -> None:
     """Fit every molecule and reaction a manifest lists; see `manifest`."""
     from . import manifest
+
+    _parallel(workers, threads)
 
     try:
         loaded = manifest.load(path)

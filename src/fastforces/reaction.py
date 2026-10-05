@@ -39,7 +39,7 @@ import numpy as np
 from ase import Atoms
 from ase.data import covalent_radii
 
-from . import sampling
+from . import parallel, sampling
 from .params import Parameters
 
 
@@ -863,6 +863,11 @@ def transition_state(
     """
     from sella import Sella
 
+    if parallel.active():
+        # One chain of dependent steps: a single task holding every thread.
+        return parallel.call(
+            transition_state, atoms, calc_factory, fmax, steps, internal, logfile
+        )
     work = atoms.copy()
     work.calc = calc_factory(work)
     Sella(work, order=1, internal=internal, logfile=logfile).run(fmax=fmax, steps=steps)
@@ -915,18 +920,22 @@ def endpoints(
     mode = mode / float(np.linalg.norm(mode, axis=1).max()) * step
 
     spins = frame_spins(reaction, spins)
-    relaxed, heading = [], []
+    starts, heading = [], []
     for sign in (+1, -1):
         displaced = ts.copy()
         displaced.info.pop("connectivity", None)
         displaced.set_positions(ts.get_positions() + sign * mode)
         heading.append(_toward(reaction, ts.get_positions(), displaced.get_positions()))
         displaced.info["spin"] = spins[heading[-1]]
-        relaxed.append(
-            sampling.optimize(
-                displaced, calc_factory, fmax=fmax, steps=steps, kind="endpoint"
-            )
-        )
+        starts.append(displaced)
+    # The two relaxations share nothing but the saddle, so they run side by side
+    # when `parallel` workers are configured.
+    relaxed = parallel.map(
+        lambda displaced: sampling.optimize(
+            displaced, calc_factory, fmax=fmax, steps=steps, kind="endpoint"
+        ),
+        starts,
+    )
 
     found = [
         frozenset(frozenset(e) for e in perceive(frame).edges()) for frame in relaxed

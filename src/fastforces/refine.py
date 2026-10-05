@@ -424,8 +424,30 @@ def fit_dissociation_energies(atoms: Atoms, terms: list[Term]) -> list[Term]:
         )
     target = atoms.get_potential_energy()
 
+    # `bonded_energy(atoms, _scaled(terms, scale))`, without rebuilding what the
+    # scale does not touch.  The root find evaluates it a few dozen times per
+    # template per round per objective evaluation, and each rebuild re-derived
+    # the bond graph, re-vectorized every term and re-keyed the nonbonded memo
+    # -- a tenth of a `fit_force_constants` run on HCombustion (29.2 s to 26.1,
+    # the same fit to the last bit; the rest is `QForce` itself on molecules
+    # too small to vectorize over, and the margins).  Only the `D` column
+    # moves, and `depths * scale` is the same multiply `_scaled` does term by
+    # term, so every residual is bit-identical to the rebuilt one.  The
+    # nonbonded half reads no bond parameter at all (see `_nonbonded_key`).
+    from DynamicTopology.core.topology import Topology
+
+    term_dict = Topology.from_terms(_scaled(terms, 1.0), atoms).term_dict
+    bond = term_dict["bond"]
+    depths = bond["kwargs"]["D"]
+    nonbonded = nonbonded_energy(atoms, term_dict)
+
     def residual(scale: float) -> float:
-        return bonded_energy(atoms, _scaled(terms, scale)) - target
+        scaled = {
+            **term_dict,
+            "bond": {**bond, "kwargs": {**bond["kwargs"], "D": depths * scale}},
+        }
+        energy = _QFORCE(atoms.positions, atoms.pbc, atoms.cell, scaled)[0]
+        return energy + nonbonded - target
 
     low, high = SCALE_BRACKET
     f_low, f_high = residual(low), residual(high)

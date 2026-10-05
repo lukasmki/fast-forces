@@ -71,7 +71,7 @@ from pathlib import Path
 import numpy as np
 from DynamicTopology.forcefield.params import ForceFieldParams, use
 
-from . import io, sampling
+from . import io, parallel, sampling
 from . import reaction as reaction_module
 from .fit import FitConfig
 
@@ -750,8 +750,9 @@ def _relabel(entry: Entry, reaction, frames: list, calc_factory) -> list:
     from ase import Atoms
 
     fission = reaction.channel()[0] == "fission"
-    labelled = []
-    for frame, kind in zip(frames, _frame_kinds(len(frames))):
+    kinds = _frame_kinds(len(frames))
+    bare = []
+    for frame, kind in zip(frames, kinds):
         atoms = Atoms(
             numbers=frame.get_atomic_numbers(),
             positions=frame.get_positions(),
@@ -760,8 +761,17 @@ def _relabel(entry: Entry, reaction, frames: list, calc_factory) -> list:
         )
         atoms.set_initial_charges(reaction.charges)
         atoms.info["spin"] = entry.spins[kind]
-        strict = not fission or kind == "reactant"
-        atoms = sampling.label(atoms, calc_factory, kind, strict=strict) or atoms
+        bare.append((atoms, kind))
+    # Every frame is its own single point; `parallel` labels the path at once.
+    results = parallel.map(
+        lambda item: sampling.label(
+            item[0], calc_factory, item[1], strict=not fission or item[1] == "reactant"
+        ),
+        bare,
+    )
+    labelled = []
+    for (atoms, kind), result in zip(bare, results):
+        atoms = result or atoms
         atoms = reaction_module._tag(
             atoms, reaction, "product" if kind == "product" else "reactant"
         )
@@ -865,6 +875,30 @@ def run(manifest, calc_factory=None, log=print) -> list[Outcome]:
         return _run(manifest, calc_factory, log)
 
 
+def _each(function, items, together: bool = True):
+    """`function` over `items` in order: one `parallel` batch, or lazily.
+
+    Lazily when there are no workers, or `together` is false, so that a serial
+    run logs each entry as it finishes rather than all of them at the end.
+    """
+    if together and parallel.active():
+        return parallel.map(function, items, nested=True)
+    return (function(item) for item in items)
+
+
+def _fragments_covered(manifest: Manifest, fitted: dict) -> bool:
+    """Is every fragment of every reaction one of the molecules already fitted?"""
+    for entry in manifest.reactions:
+        try:
+            reaction = reaction_module.parse(entry.mapped)
+        except Exception:  # noqa: BLE001 -- the fit reports it, serially
+            return False
+        for side in ("reactant", "product"):
+            if any(f.key not in fitted for f in reaction.fragments(side)):
+                return False
+    return True
+
+
 def _run(manifest, calc_factory, log) -> list[Outcome]:
     factory, method = calculator_factory(manifest.calculator)
     if calc_factory is not None:
@@ -875,39 +909,84 @@ def _run(manifest, calc_factory, log) -> list[Outcome]:
     outcomes: list[Outcome] = []
     fitted: dict = {}
 
-    def attempt(entry, work):
-        log(f"\n[{entry.kind} {entry.id}] {entry.smiles}")
+    def guarded(work):
+        """`work()`, or the traceback it raised -- a worker must not take its batch down."""
         try:
-            written, detail = work()
+            return True, work()
         except Exception as error:  # noqa: BLE001 -- recorded, see the docstring
-            log(f"  FAILED: {type(error).__name__}: {error}")
-            outcomes.append(Outcome(entry, False, detail=traceback.format_exc()))
+            return False, (f"{type(error).__name__}: {error}", traceback.format_exc())
+
+    # Run serially, an entry's header is logged as its work starts, as it always
+    # was; run as a batch, the whole entry is logged as the batch lands.
+    live = not parallel.active()
+
+    def header(entry):
+        log(f"\n[{entry.kind} {entry.id}] {entry.smiles}")
+
+    def record(entry, result):
+        if not live:
+            header(entry)
+        ok, value = result
+        if not ok:
+            error, trace = value
+            log(f"  FAILED: {error}")
+            outcomes.append(Outcome(entry, False, detail=trace))
             return None
+        written, detail = value
         for path in written:
             log(f"  wrote {_relative(path, manifest.root)}")
         outcomes.append(Outcome(entry, True, written=written, detail=detail))
+        if detail:
+            log("  " + detail.replace("\n", "\n  "))
         return detail
 
-    for entry in manifest.molecules:
-        def work(entry=entry):
+    # Every molecule is its own fit and every reaction its own search, and none
+    # reads another's result -- reactions read only the molecules -- so with
+    # `parallel` workers configured each stage runs as one batch, the node
+    # divided between its entries.  In manifest order either way, and logged
+    # in it.
+    def molecule(entry):
+        if live:
+            header(entry)
+
+        def work():
             written, (equilibrium, params) = fit_molecule(
                 manifest, entry, factory, method
             )
-            fitted[entry.key] = (equilibrium, params)
-            return written, params.fit_report()
+            return written, params.fit_report(), (equilibrium, params)
 
-        report = attempt(entry, work)
-        if report:
-            log("  " + report.replace("\n", "\n  "))
+        ok, value = guarded(work)
+        if not ok:
+            return (ok, value), None
+        written, report, result = value
+        return (ok, (written, report)), result
 
-    for entry in manifest.reactions:
-        def work(entry=entry):
+    for entry, (result, molecule_fit) in zip(
+        manifest.molecules, _each(molecule, manifest.molecules)
+    ):
+        if molecule_fit is not None:
+            fitted[entry.key] = molecule_fit
+        record(entry, result)
+
+    def reaction(entry):
+        if live:
+            header(entry)
+
+        def work():
             written, rxn = fit_reaction(manifest, entry, factory, fitted)
             return written, rxn.report()
 
-        report = attempt(entry, work)
-        if report:
-            log("  " + report.replace("\n", "\n  "))
+        return guarded(work)
+
+    # A fragment no molecule entry covers is fitted by the reaction that needs
+    # it, into a file named for the fragment; two reactions doing that at once
+    # would write the same file, so they only run side by side when every
+    # fragment is already fitted.
+    together = parallel.active() and _fragments_covered(manifest, fitted)
+    for entry, result in zip(
+        manifest.reactions, _each(reaction, manifest.reactions, together)
+    ):
+        record(entry, result)
 
     failed = [o for o in outcomes if not o.ok]
     log(f"\n{len(outcomes) - len(failed)} of {len(outcomes)} entries fitted")

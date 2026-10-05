@@ -215,6 +215,7 @@ class PySCFCalculator(Calculator):
         threads: int | None = None,
         level_shift: float | tuple[float, float] = 0.0,
         max_cycle: int = 200,
+        conv_tol: float = 1e-9,
         cp: bool = False,
         pcm: str | None = None,
         pcm_eps: float = 78.3553,
@@ -237,7 +238,14 @@ class PySCFCalculator(Calculator):
             # PySCF's own limit is 50 cycles, which open-shell pairs -- a
             # triplet OH + OH at a saddle guess -- routinely need more than,
             # and an SCF that runs out now raises (`_calculate_bo`).
-            .set(conv_tol=1e-6, level_shift=level_shift, max_cycle=max_cycle)
+            #
+            # `conv_tol` is PySCF's own default, 1e-9 Hartree.  This used to
+            # loosen it to 1e-6, where the SCF stops at an orbital gradient of
+            # ~1e-3 and the forces carry an error the size of
+            # `sampling.optimize`'s `fmax = 1e-3`: a relaxation then wanders on
+            # noise.  PABA, plain or pre-relaxed, was still at 1e-2 eV/A after
+            # 75 BFGS steps, and pre-relaxed it converged in 11 at 1e-9.
+            .set(conv_tol=conv_tol, level_shift=level_shift, max_cycle=max_cycle)
             .density_fit()
         )
         if pcm is not None:

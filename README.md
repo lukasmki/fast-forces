@@ -157,6 +157,94 @@ the charges (`"acks2"`, the default, or `"pointcharge"`), and
 are the fixed charges. A charged molecule needs `"mulliken"` or `"esp"`, and so
 does `pointcharge`.
 
+## Running on a CPU node
+
+A fit with a DFT reference is almost entirely independent single points -- the
+`6N` Hessian displacements, the thermal frames, every point of every torsion
+scan, the fragments and the free atoms -- and a reference code does not scale
+across a node by itself. PySCF B3LYP/6-31G* on PABA is 18.6 s per energy and
+gradient on 4 threads and 6.9 s on 32, and *slower* again past that. So
+`fastforces.parallel` runs the calculations side by side, each in its own
+forked process:
+
+```bash
+fast-forces fit-manifest Water.json --workers 32 --threads 4
+FASTFORCES_WORKERS=32 FASTFORCES_THREADS=4 python my_fit.py   # any script
+```
+
+or `fastforces.parallel.configure(workers=32, threads=4)` before the first
+reference calculation. `examples/fit-manifest.slurm` is a whole-node job.
+Within a molecule the Hessian, thermal, conformer, torsion, fragment and atom
+frames are each one batch, and the two downhill relaxations from a saddle run
+together; a manifest fits its molecules side by side and then its reactions,
+dividing the node between them. A serial chain -- a relaxation, a Sella search --
+runs in one worker with up to 32 threads.
+
+| B3LYP/6-31G*, 128-core Milan | serial, 32 threads | 32 workers x 4 threads |
+|---|---|---|
+| ethanol, whole fit | 1204 s | 285 s |
+| of which torsion scans (48 relaxations) | 1006 s | 207 s |
+| of which Hessian (54 single points) | 70 s | 15 s |
+| of which thermal frames (40) | 54 s | 12 s |
+| H2O2, whole fit | 124 s | 31 s |
+
+What does not parallelize is a serial chain. PABA's equilibrium relaxation alone
+(BFGS to `fmax = 1e-3`) took about 32 minutes on 32 threads, the same either
+way. A batch is as slow as its slowest wave: ethanol's 48 torsion points on 32
+workers run as two, so a molecule with many scan points can do better with more,
+narrower workers (`--workers 64 --threads 2`).
+
+**The equilibrium relaxation can start from GFN2-xTB.** `"prerelax":
+"GFN2-xTB"` in a manifest's `fit_config` (or `FitConfig(prerelax=...)`)
+relaxes the molecule with tblite first, finite-differences tblite's Hessian
+there, and starts the reference's BFGS from that geometry with that Hessian as
+its first guess -- in place of BFGS's uniform 70 eV/A^2, which is right for no
+mode of a real molecule. Translations and rotations keep the 70: a DFT grid is
+not rotationally invariant, so the reference's forces carry a small torque
+that a soft guess would answer with full-length rotations. The reference
+still converges to its own `fmax`, so the minimum is the same to within it.
+
+| relaxation to `fmax = 1e-3` | plain | pre-relaxed |
+|---|---|---|
+| ethanol, B3LYP/6-31G*, 32 threads | 63 evaluations, 118 s | 11 evaluations, 51 s |
+| PABA, same, SCF `conv_tol = 1e-9` | not converged after 35 | 11 evaluations |
+| PABA, GFN1-xTB as the reference | 96 evaluations | 7 evaluations |
+
+The two ethanol minima agree to 1e-4 A RMSD. It is opt-in because a different
+method can carry a flexible molecule whose input geometry sits between two
+conformers into the other well.
+
+**The PySCF calculator converges its SCF to `conv_tol = 1e-9`** (PySCF's own
+default; a `"conv_tol"` key in `fit_config.calculator` overrides it).
+It used to be 1e-6, where the SCF stops at an orbital gradient of ~1e-3 and
+the forces inherit an error of that order -- the size of `fmax = 1e-3`, so
+near convergence BFGS updated its Hessian from differences that were mostly
+noise. PABA, plain or pre-relaxed, was still wandering between 1e-2 and 5e-2
+eV/A after 75 evaluations at 1e-6, which is most likely where its 32-minute
+relaxation went; at 1e-9 the pre-relaxed run converged in 11, each evaluation
+3-4x dearer but a tenth as many. Every frame's energy moves in its last digits
+with the change, so a training set labelled at 1e-6 and one labelled now are
+not byte-identical.
+
+**The training sets are the serial ones.** Every frame is labelled by a fresh
+calculator either way, so at one thread per calculation a parallel fit is byte
+for byte the serial fit -- training file and `.jsonl` -- which
+`tests/test_parallel.py` checks. At more threads the last digits move with the
+thread count, as they do between two serial runs at different
+`OMP_NUM_THREADS`: tblite reduces in parallel, and PySCF's SCF converges to its
+`conv_tol` along a slightly different path (energies within ~1e-5 eV at the
+old 1e-6; less at 1e-9).
+
+Two constraints come with it. The workers are forked, so the calculator factory
+may be a lambda or a closure; but OpenMP runtimes are not fork-safe, so the
+parent process holds its own to one thread and never runs a reference
+calculation itself -- configure workers *before* anything in the process has
+run a multi-threaded tblite or PySCF calculation, which is why the environment
+variables are read at import. And anything a factory does as a side effect
+happens in a worker: four `tests/test_manifest.py` tests that count calculator
+constructions through a closure fail under `FASTFORCES_WORKERS`, and every
+other test passes.
+
 ## Examples
 
 Numbered, runnable examples live in [`quickstart/`](quickstart/) -- start with
